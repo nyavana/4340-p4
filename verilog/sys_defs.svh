@@ -24,8 +24,8 @@
 `define N 1
 
 // sizes
-`define ROB_SZ xx
-`define RS_SZ xx
+`define ROB_SZ 8 // temporary only for testing
+`define RS_SZ 8 // temporary only for testing
 `define PHYS_REG_SZ (32 + `ROB_SZ)
 
 // worry about these later

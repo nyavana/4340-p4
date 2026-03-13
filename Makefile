@@ -111,7 +111,7 @@ else
 endif
 
 # the Verilog Compiler command and arguments
-VCS = SW_VCS=2020.12-SP2-1 vcs -CFLAGS "-I /homes/user/fac/tk3070/conda/include" -sverilog +vc -Mupdate -line -full64 -kdb -lca -nc \
+VCS = SW_VCS=2020.12-SP2-1 vcs -CFLAGS "-I /homes/user/fac/tk3070/conda/include" -sverilog +incdir+verilog +vc -Mupdate -line -full64 -kdb -lca -nc \
       -debug_access+all+reverse $(VCS_BAD_WARNINGS) +define+CLOCK_PERIOD=$(CLOCK_PERIOD)ps
 # a SYNTH define is added when compiling for synthesis that can be used in testbenches
 
@@ -126,7 +126,7 @@ VERDI_EXE = $(VERDI_HOME)/bin/verdi
 LIB = $(wildcard /homes/user/fac/tk3070/tmp/synthesis/OpenROAD-flow-scripts/flow/platforms/asap7/work_around_yosys/asap7sc7p5t*.v)
 
 # the CSEE 4824 synthesis script
-TCL_SCRIPT = synth/eecs4340_synth.tcl
+TCL_SCRIPT = synth/csee4824_synth.tcl
 
 # Set the shell's pipefail option: causes return values through pipes to match the last non-zero value
 # (useful for, i.e. piping to `tee`)
@@ -177,7 +177,7 @@ GREP = grep -E --color=auto
 # - with dependencies: 'rob.simv', 'rob.cov', and 'synth/rob.vg'
 
 # TODO: add more modules here
-TESTED_MODULES = mult rob
+TESTED_MODULES = mult rob RS rs
 
 MODULE = pipeline
 
@@ -192,6 +192,9 @@ $(call DEPS,mult): $(MULT_DEPS)
 # No dependencies for the rob (TODO: add any you create)
 ROB_DEPS =
 $(call DEPS,rob): $(ROB_DEPS)
+
+RS_DEPS = 
+$(call DEPS,rs): $(RS_DEPS)
 
 # This allows you to use the following make targets:
 # make <module>.pass   <- greps for "@@@ Passed" or "@@@ Incorrect" in the output
