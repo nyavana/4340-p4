@@ -177,7 +177,7 @@ GREP = grep -E --color=auto
 # - with dependencies: 'rob.simv', 'rob.cov', and 'synth/rob.vg'
 
 # TODO: add more modules here
-TESTED_MODULES = mult rob RS rs
+TESTED_MODULES = mult rob rs
 
 MODULE = pipeline
 
@@ -328,6 +328,9 @@ TESTBENCH = test/pipeline_test.sv \
 
 # you could simplify this line with $(wildcard verilog/*.sv) - but the manual way is more explicit
 SOURCES = verilog/pipeline.sv \
+          verilog/decoder.sv \
+          verilog/rob.sv \
+          verilog/rs.sv \
           verilog/regfile.sv \
           verilog/icache.sv \
           verilog/mult.sv \

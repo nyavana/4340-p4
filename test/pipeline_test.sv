@@ -256,7 +256,7 @@ module testbench;
                      $realtime);
             debug_counter <= 0;
         end else begin
-            #2;
+            #0.1;
 
             // print the pipeline debug outputs via c code to the pipeline output file
             // print_cycles();
