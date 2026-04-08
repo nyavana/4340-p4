@@ -24,19 +24,19 @@
 `define N 1
 
 // sizes
-`define ROB_SZ xx
-`define RS_SZ xx
+`define ROB_SZ 8
+`define RS_SZ 8
 `define PHYS_REG_SZ (32 + `ROB_SZ)
 
 // worry about these later
 `define BRANCH_PRED_SZ xx
-`define LSQ_SZ xx
+`define LSQ_SZ 4
 
 // functional units (you should decide if you want more or fewer types of FUs)
 `define NUM_FU_ALU 1
 `define NUM_FU_MULT 1
-`define NUM_FU_LOAD xx
-`define NUM_FU_STORE xx
+`define NUM_FU_LOAD 1
+`define NUM_FU_STORE 1
 
 // number of mult stages (2, 4, or 8)
 `define MULT_STAGES 4
