@@ -242,9 +242,13 @@ isn't actually nondeterministic; it's deterministic. Simulator time stops
 advancing around cycle 2192, after 44 correct writebacks that cover the
 full setup phase and the first loop iteration. The RS, ROB, multiplier,
 and core pipeline dataflow all check out, they do the right thing right
-up until time freezes. The likely culprit is a combinational loop or a
-delta-cycle storm somewhere at the `icache.sv` / `test/mem.sv` boundary,
-and that audit is deferred to the next session.
+up until time freezes. The week 4 doc guessed the loop was at the
+`icache` / `test/mem.sv` boundary; it nailed the *kind* of bug
+(delta-cycle storm) but missed the location. The actual loop was in the
+RS issue selector and got fixed post-milestone-3. See
+[doc/rs-issue-loop-fix.md](doc/rs-issue-loop-fix.md) and the
+[Post-milestone-3 update](#post-milestone-3-rs-issue-selector-fix)
+section below.
 
 ## Progress: Milestone 3 (memory operations)
 
@@ -355,9 +359,6 @@ to a ROB entry the ROB has just retired.
 
 ### What's deferred
 
-- Diagnose and fix the tight-loop hang. Most likely culprit: a missed
-  wake-up between the LSQ head moving forward and the next store
-  asserting `store_ready` to a ROB entry the ROB has just retired.
 - Store-to-load forwarding. The current head-only LSQ serializes all
   memory ops; a forwarding path would let independent loads bypass an
   in-flight store.
@@ -365,3 +366,75 @@ to a ROB entry the ROB has just retired.
   exercised, since branches still stall the front-end and no speculation
   reaches the LSQ.
 - Full pipeline synthesis with timing closure.
+
+## Post-milestone-3: RS issue-selector fix
+
+The "tight loop" hang that took out 15 of the 33 milestone-3 programs
+turned out not to be in the LSQ at all. It was a combinational loop in
+the RS issue selector: `issue_found` depended on `src*_ready_eff`,
+which depended on `cdb_valid`, which depended on `issue_accept`, which
+depended back on `issue_found`. Whenever a lower-index RS slot was
+wakeable from the CDB tag of a higher-index slot the ALU was issuing,
+the selector ping-ponged between them and VCS sat inside a single
+timestamp forever.
+
+`mult_no_lsq` was the most reproducible victim because its iter-2
+mul/add chain produces that exact RS configuration at cycle ≈2192.
+Most other "tight loop" programs hit it eventually for the same
+reason. The LSQ wake-up hypothesis from milestone 3 was a wrong guess.
+
+The fix is one block in `verilog/rs.sv`: the issue selector now reads
+the registered `entries[i].src1_ready` / `src2_ready` instead of the
+combinational `_eff` versions. The CDB-bypass path is still used on
+the issued entry's `src_value` output, so correctness is unchanged;
+the only behavior difference is that an instruction whose dependency
+arrives on the same cycle's CDB now waits one extra cycle to issue.
+Standard P6 wakeup-then-select.
+
+Credit for the diagnosis goes to `xh2718` of
+`CSEE4340-26/p4.GaPiChiXuXu`, whose commit
+[`397ea7d`](https://github.com/CSEE4340-26/p4.GaPiChiXuXu/commit/397ea7d421499bc0f43a9a99cd950ad374e0d985)
+contains the same comment now sitting above our issue selector. Their
+commit did several other unrelated things for an earlier-milestone
+tree; only the `rs.sv` selector change was applicable here.
+
+### Test results after the fix
+
+All 34 programs in `programs/` now reach `HALTED_ON_WFI`, up from 18.
+The 18 that were already passing produce the same cycle counts to
+the cycle, so the fix is non-disruptive. The 15 that were hanging or
+timing out (`fib`, `parallel`, `mult_no_lsq`, `mult`, `copy`,
+`alexnet`, `backtrack`, `bfs`, `dft`, `graph`, `matrix_mult_rec`,
+`mergesort`, `outer_product`, `quicksort`, `sort_search`) all halt
+cleanly. `mytest`, which wasn't in the milestone-3 results table at
+all, also halts.
+
+```
+                  post-milestone-3 program test results
+
+  passes  ##################################          34 / 34  (100%)
+  fails                                                0 / 34  (  0%)
+          |    |    |    |    |    |    |
+          0    5    10   15   20   25   30
+```
+
+The pre-fix milestone-3 snapshot above still reflects what shipped
+under the milestone-3 label; the new numbers are from running the
+post-fix simv on the same set of programs.
+
+Caveat: "halts cleanly" is the same metric the milestone-3 README used
+to call something a pass. It is not full functional verification.
+There is no golden reference output for these programs in the repo.
+For the 18 previously-passing programs the identical cycle counts are
+strong evidence of zero regression. For the 15 newly-passing programs
+only the WFI / clean halt is verified. The writeback tails look
+reasonable, but nothing here proves that, say, `quicksort` actually
+emits a sorted array.
+
+See [doc/rs-issue-loop-fix.md](doc/rs-issue-loop-fix.md) for the full
+writeup, including the loop diagram, the cycle-2192 trace, and the
+per-program before/after table.
+
+Commit:
+[`194b97d`](https://github.com/nyavana/4340-p4/commit/194b97d)
+on `milestone3` (fast-forward from `2532ed4`).
