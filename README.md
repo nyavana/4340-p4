@@ -300,45 +300,49 @@ to gate a clock-period reduction).
 
 ### Full pipeline test results
 
-18 of 33 programs in `programs/` reach `HALTED_ON_WFI`, up from roughly
-30% on the milestone 2 baseline. The new passes are mostly C programs
-that needed the JAL/JALR fix to get past their first function call.
+All 34 programs in `programs/` reach `HALTED_ON_WFI`. The milestone 3
+release shipped at 18/33; the remaining 15 (plus `mytest`, which
+wasn't in the milestone-3 results table) were unblocked by a
+post-milestone-3 fix to the RS issue selector. See the
+[Post-milestone-3](#post-milestone-3-rs-issue-selector-fix) section
+below for the explanation, or
+[doc/rs-issue-loop-fix.md](doc/rs-issue-loop-fix.md) for the full
+writeup. The pre-fix milestone-3 snapshot is preserved in
+[doc/milestone3-results.md](doc/milestone3-results.md).
 
 ```
-                  milestone 3 program test results
+                  full pipeline test results
 
-  passes  ##################                          18 / 33  (55%)
-  fails   ###############                             15 / 33  (45%)
-          |    |    |    |    |    |    |
-          0    5    10   15   20   25   30
+  passes  ##################################    34 / 34  (100%)
+  fails                                          0 / 34  (  0%)
+          |    |    |    |    |    |    |    |
+          0    5    10   15   20   25   30   35
 ```
 
-Pass / fail per program:
+Per-program cycle counts:
 
 ```
-  PASS                                FAIL
-  ----------------------------------  ----------------------------------
-  halt              106 cycles        fib                 hangs
-  no_hazard         731 cycles        parallel            hangs (m2 bug)
-  evens             1178 cycles       mult_no_lsq         hangs (m2 bug)
-  evens_long        2979 cycles       mult                hangs
-  haha              940 cycles        copy                hangs
-  insertion         3630 cycles       alexnet             timeout
-  btest1            17090 cycles      backtrack           hangs
-  btest2            27467 cycles      bfs                 hangs
-  fib_long          6521 cycles       dft                 timeout
-  fib_rec           38011 cycles      graph               hangs
-  sampler           6273 cycles       matrix_mult_rec     hangs
-  saxpy             4599 cycles       mergesort           hangs
-  copy_long         5861 cycles       outer_product       hangs
-  basic_malloc      50037 cycles      quicksort           hangs
-  fc_forward        55381 cycles      sort_search         hangs
-  insertionsort     842214 cycles
-  omegalul          3964 cycles
-  priority_queue    78572 cycles
+  alexnet           9,465,750        halt                    106
+  backtrack           264,002        insertion             3,630
+  basic_malloc         50,037        insertionsort       842,214
+  bfs                 112,494        matrix_mult_rec     726,606
+  btest1               17,090        mergesort           303,270
+  btest2               27,467        mult                  7,558
+  copy                  3,701        mult_no_lsq           2,833
+  copy_long             5,861        mytest                  419
+  dft               1,708,161        no_hazard               731
+  evens                 1,178        omegalul              3,964
+  evens_long            2,979        outer_product     4,848,166
+  fc_forward           55,381        parallel              2,325
+  fib                   2,415        priority_queue       78,572
+  fib_long              6,521        quicksort           958,030
+  fib_rec              38,011        sampler               6,273
+  graph               461,494        saxpy                 4,599
+  haha                    940        sort_search         883,184
 ```
 
-What's new since milestone 2:
+What got unblocked at milestone 3 specifically (loads, stores, and
+the JAL/JALR return-address fix):
 
 - `saxpy` and `copy_long` are the first programs with real loads and
   stores in a loop to finish.
@@ -347,15 +351,16 @@ What's new since milestone 2:
   depend on the JAL/JALR return-address fix.
 - `fib_rec` and `sampler` were also unblocked by JAL/JALR.
 
-The remaining failures cluster on tight memory loops with no slack
-between instructions. `mult_no_lsq` and `parallel` already hung on the
-milestone 2 baseline at the same commit count, so part of this is
-inherited rather than caused by the LSQ. The `copy` program hangs at
-13 commits but its NOP-padded twin `copy_long` runs cleanly in 5861
-cycles. Diagnosing the exact deadlock is the top item for the next
-debugging session; the most likely culprit is a missed wake-up between
-the LSQ head moving forward and the next store asserting `store_ready`
-to a ROB entry the ROB has just retired.
+Everything else came in with the post-milestone-3 RS fix.
+
+Caveat: "halts cleanly" is the same metric the original milestone-3
+results used. It is not full functional verification. There is no
+golden reference output for these programs in the repo. For the 18
+programs that were already passing at milestone 3 the identical cycle
+counts are strong evidence of zero regression. For the 16 newly
+passing (15 from the milestone-3 fail table plus `mytest`) only the
+WFI / clean halt is verified, so nothing here proves that `quicksort`
+actually emits a sorted array.
 
 ### What's deferred
 
@@ -398,42 +403,10 @@ contains the same comment now sitting above our issue selector. Their
 commit did several other unrelated things for an earlier-milestone
 tree; only the `rs.sv` selector change was applicable here.
 
-### Test results after the fix
-
-All 34 programs in `programs/` now reach `HALTED_ON_WFI`, up from 18.
-The 18 that were already passing produce the same cycle counts to
-the cycle, so the fix is non-disruptive. The 15 that were hanging or
-timing out (`fib`, `parallel`, `mult_no_lsq`, `mult`, `copy`,
-`alexnet`, `backtrack`, `bfs`, `dft`, `graph`, `matrix_mult_rec`,
-`mergesort`, `outer_product`, `quicksort`, `sort_search`) all halt
-cleanly. `mytest`, which wasn't in the milestone-3 results table at
-all, also halts.
-
-```
-                  post-milestone-3 program test results
-
-  passes  ##################################          34 / 34  (100%)
-  fails                                                0 / 34  (  0%)
-          |    |    |    |    |    |    |
-          0    5    10   15   20   25   30
-```
-
-The pre-fix milestone-3 snapshot above still reflects what shipped
-under the milestone-3 label; the new numbers are from running the
-post-fix simv on the same set of programs.
-
-Caveat: "halts cleanly" is the same metric the milestone-3 README used
-to call something a pass. It is not full functional verification.
-There is no golden reference output for these programs in the repo.
-For the 18 previously-passing programs the identical cycle counts are
-strong evidence of zero regression. For the 15 newly-passing programs
-only the WFI / clean halt is verified. The writeback tails look
-reasonable, but nothing here proves that, say, `quicksort` actually
-emits a sorted array.
-
-See [doc/rs-issue-loop-fix.md](doc/rs-issue-loop-fix.md) for the full
-writeup, including the loop diagram, the cycle-2192 trace, and the
-per-program before/after table.
+Full writeup, including the loop diagram, the cycle-2192 trace, the
+per-program before/after table, and the caveat about what "halts
+cleanly" does and doesn't verify, is in
+[doc/rs-issue-loop-fix.md](doc/rs-issue-loop-fix.md).
 
 Commit:
 [`194b97d`](https://github.com/nyavana/4340-p4/commit/194b97d)
