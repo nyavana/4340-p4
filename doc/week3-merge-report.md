@@ -10,16 +10,13 @@ Merge commit: `8b483d5`
 
 The project had three branches diverging from `817c826` ("Initial release"):
 
-- **`release`** (`5802c8a`) — baseline + progress notes
-- **`milestone1`** (`9be6622`) — implemented `verilog/rs.sv` + `test/rs_test.sv`, set `ROB_SZ=8`/`RS_SZ=8`
-- **`milestone2`** (`6f649b6`) — implemented `verilog/rob.sv` and a heavy refactor of `verilog/pipeline.sv`
+- `release` (`5802c8a`): baseline plus progress notes
+- `milestone1` (`9be6622`): added `verilog/rs.sv` and `test/rs_test.sv`, set `ROB_SZ=8`/`RS_SZ=8`
+- `milestone2` (`6f649b6`): added `verilog/rob.sv` and heavily refactored `verilog/pipeline.sv`
 
-Investigation revealed that **the two milestones were structurally complementary, not alternatives**:
+The two milestones turned out to be complementary, not alternatives. milestone2's `verilog/pipeline.sv` instantiates `rs rs_0 (...)` at lines 330-359, but `verilog/rs.sv` only existed on milestone1, so milestone2 could not compile on its own. milestone1 did not have the refactored pipeline or `rob.sv`, so it had no way to test integration. Nothing built end-to-end on either side.
 
-- milestone2's `verilog/pipeline.sv` instantiates `rs rs_0 (...)` at lines 330-359, but `verilog/rs.sv` only lived on milestone1. So milestone2 was **uncompilable on its own**.
-- milestone1 didn't have the refactored pipeline or `rob.sv`, so it couldn't test integration.
-
-Both branches had to be combined for anything to build end-to-end. Additionally, the main working tree had a lingering `<<<<<<< Updated upstream` / `>>>>>>> Stashed changes` marker block in `Makefile:180-184` — those markers were leftovers from a failed `git stash pop`, and they had actually been committed into milestone2, so any future merge of milestone2 would carry them.
+The main working tree also had a lingering `<<<<<<< Updated upstream` / `>>>>>>> Stashed changes` marker block in `Makefile:180-184`. Those markers were leftovers from a failed `git stash pop`, and they had already been committed into milestone2, so any future merge of milestone2 would drag them along.
 
 ## Approach
 
@@ -27,7 +24,7 @@ Both branches had to be combined for anything to build end-to-end. Additionally,
    ```
    git worktree add -b week3 ../4340-p4-week3 milestone1
    ```
-   (Note: `git worktree add -b week3 ... milestone1` initially created a `milestone1` local tracking branch instead of `week3` because `milestone1` was only a remote ref. Fixed with `git checkout -b week3` inside the worktree.)
+   Note: `git worktree add -b week3 ... milestone1` first created a `milestone1` local tracking branch instead of `week3`, because `milestone1` was only a remote ref. Fixed with `git checkout -b week3` inside the worktree.
 
 2. Merged `origin/milestone2` into `week3` with a non-fast-forward merge:
    ```
@@ -43,7 +40,7 @@ Both branches had to be combined for anything to build end-to-end. Additionally,
 
 ### `verilog/sys_defs.svh` — auto-merged cleanly
 
-No manual intervention was required. milestone1 edited the `ROB_SZ` / `RS_SZ` lines; milestone2 edited the `NUM_FU_*` lines. Git's three-way merge handled the disjoint changes automatically. Final Parameters block:
+Nothing to do by hand. milestone1 edited the `ROB_SZ` / `RS_SZ` lines; milestone2 edited the `NUM_FU_*` lines. Git's three-way merge handled the disjoint changes automatically. Final Parameters block:
 
 ```systemverilog
 `define N 1
@@ -62,9 +59,9 @@ No manual intervention was required. milestone1 edited the `ROB_SZ` / `RS_SZ` li
 `define MULT_STAGES 4
 ```
 
-### `Makefile:180` — **nested conflict**, resolved by hand
+### `Makefile:180` — nested conflict, resolved by hand
 
-milestone2 had committed the stash-pop leftover markers, so the merge produced a conflict-within-a-conflict:
+milestone2 had committed the stash-pop leftovers, so the merge produced a conflict inside a conflict:
 
 ```makefile
 <<<<<<< HEAD
@@ -84,23 +81,23 @@ Collapsed to a single clean line, dropping milestone1's `RS rs` typo:
 TESTED_MODULES = mult rob rs
 ```
 
-The `SOURCES` block already listed both `verilog/rob.sv` and `verilog/rs.sv` (contributed by milestone2), and the `RS_DEPS =` / `ROB_DEPS =` dependency stanzas were already in place. No other Makefile edits were needed.
+The `SOURCES` block already listed both `verilog/rob.sv` and `verilog/rs.sv` (added on milestone2), and the `RS_DEPS =` / `ROB_DEPS =` dependency stanzas were already in place. No other Makefile edits were needed.
 
 ### Files merged cleanly (no conflict)
 
 - `verilog/rob.sv` — added from milestone2
-- `verilog/pipeline.sv` — heavy refactor, taken from milestone2 verbatim (milestone1 didn't touch it)
+- `verilog/pipeline.sv` — heavy refactor, taken from milestone2 verbatim (milestone1 did not touch it)
 - `test/pipeline_test.sv` — taken from milestone2
 - `programs/mytest.s`, `programs/mytest.mem` — added from milestone2
-- `verilog/rs.sv`, `test/rs_test.sv` — kept from milestone1 (milestone2 didn't touch them)
+- `verilog/rs.sv`, `test/rs_test.sv` — kept from milestone1 (milestone2 did not touch them)
 
 ## Verification results
 
-All runs executed inside `../4340-p4-week3` with the VCS toolchain.
+All runs happened inside `../4340-p4-week3` with the VCS toolchain.
 
 ### `make simv` — PASS
 
-Compiled cleanly with 0 errors and 0 warnings. This is the first concrete proof that milestone1's `rs.sv` port signature matches milestone2's `rs rs_0` instantiation in `pipeline.sv:330-359`. Before this merge, `make simv` was impossible on either branch alone.
+Compiled with 0 errors and 0 warnings. This is the first time we could confirm that milestone1's `rs.sv` port signature lines up with milestone2's `rs rs_0` instantiation in `pipeline.sv:330-359`. Before this merge, `make simv` was impossible on either branch alone.
 
 ### `make no_hazard.out` — PASS
 
@@ -116,16 +113,16 @@ Compiled cleanly with 0 errors and 0 warnings. This is the first concrete proof 
   PC=00000010, REG[ 5]=00000005
   ...
   ```
-- CPI: 52.21 (high because of 100 ns memory latency on icache misses — expected)
+- CPI: 52.21. High because of the 100 ns memory latency on icache misses, which is expected for this workload.
 
 ### `make mult_no_lsq.out` — NONDETERMINISTIC (known follow-up)
 
-Inconsistent behavior across runs:
+Behavior differed across runs:
 
-- **Run A:** Produced 44 correct-looking writebacks in ~45 seconds, including multiplication results such as `REG[11]=3d8587e8`, `REG[11]=48d5d725`. The processor successfully executed the setup phase and entered the loop body at `0x68`.
-- **Run B (identical command sequence):** Produced **0 writebacks in 10+ minutes** of sim time. Only the reset-phase output appeared; the testbench never committed an instruction.
+- Run A: 44 correct-looking writebacks in ~45 seconds, with multiplication results like `REG[11]=3d8587e8`, `REG[11]=48d5d725`. The processor ran through the setup phase and entered the loop body at `0x68`.
+- Run B (same command sequence): 0 writebacks in 10+ minutes of sim time. Only the reset-phase output appeared; the testbench never committed an instruction.
 
-This is a **pre-existing pipeline correctness issue inherited from milestone2**, not something the merge introduced. It could not have been detected earlier because milestone2 was unbuildable on its own (no `rs.sv`). The merge has **unblocked** integration testing and surfaced the bug as a next-step debugging target.
+This is a pre-existing pipeline bug inherited from milestone2, not something the merge introduced. It could not have been caught earlier because milestone2 was unbuildable on its own (no `rs.sv`). The merge is what made it visible at all.
 
 ## Final git state
 
@@ -152,14 +149,14 @@ Local branches in the week3 worktree: `week3` (current), `milestone1`, `release`
 
 In rough priority order:
 
-1. **Debug `mult_no_lsq` nondeterminism.** Likely culprits:
-   - CDB arbitration logic in `verilog/pipeline.sv:467-502` (MULT has priority over ALU via `issue_accept = rs_issue_valid && (is_mult ? !mult_busy : !mult_done)`).
+1. Debug the `mult_no_lsq` nondeterminism. Likely culprits:
+   - CDB arbitration in `verilog/pipeline.sv:467-502`. MULT has priority over ALU via `issue_accept = rs_issue_valid && (is_mult ? !mult_busy : !mult_done)`.
    - Multiplier handshake around `mult_busy` / `mult_done` in `verilog/pipeline.sv:417-431`.
-   - Uninitialized state in `verilog/rs.sv` or `verilog/rob.sv` causing X-propagation that sometimes "happens to" resolve and sometimes doesn't.
+   - Uninitialized state in `verilog/rs.sv` or `verilog/rob.sv` causing X-propagation that sometimes resolves and sometimes does not.
    - Race between ROB commit → `PC_reg` redirect and in-flight instructions.
-2. **Write `test/rob_test.sv`.** Missing on all branches, so `make rob.pass` fails at compile. Pair with the existing `test/rs_test.sv` as a template for structure.
-3. **Clean up the main worktree.** It is currently detached at `6f649b6`, with stale stash-pop markers in its copy of `Makefile`, an untracked `doc/` directory, an untracked `CLAUDE.md`, and a staged `D pdfs/eecs4340project4.pdf`. Decide what to preserve and what to discard. Note that the stash-pop markers in the main worktree's Makefile are **not** the same as the conflict that was just resolved in `week3` — the `week3` merge commit contains a clean Makefile.
-4. **Push `week3` to `origin`** once the `mult_no_lsq` bug is fixed and you want team review.
+2. Write `test/rob_test.sv`. It is missing on all branches, so `make rob.pass` fails at compile. The existing `test/rs_test.sv` is a reasonable structural template.
+3. Clean up the main worktree. Currently detached at `6f649b6`, with stale stash-pop markers in its copy of `Makefile`, an untracked `doc/` directory, an untracked `CLAUDE.md`, and a staged `D pdfs/eecs4340project4.pdf`. Decide what to preserve and what to drop. The stash-pop markers in the main worktree's Makefile are not the same as the conflict that was resolved in `week3`; the `week3` merge commit already has a clean Makefile.
+4. Push `week3` to `origin` once the `mult_no_lsq` bug is fixed and the branch is ready for team review.
 
 ## Reference: files changed by the merge commit
 

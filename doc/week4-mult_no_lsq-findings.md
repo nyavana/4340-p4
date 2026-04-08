@@ -1,10 +1,11 @@
 # `mult_no_lsq` hang — investigation notes (week4, deferred)
 
-Status: **deferred.** The root cause likely lies outside the modules currently
-under investigation (pipeline / ROB / RS / mult), in memory or cache modules
-that have not yet been audited. Picking this up again should start by auditing
-`verilog/icache.sv`, `verilog/mem.sv` (test/mem.sv if that is the one in use),
-and any memory-side glue in `test/pipeline_test.sv`.
+Status: deferred. The root cause probably lies outside the modules
+currently under investigation (pipeline / ROB / RS / mult), in memory
+or cache modules that have not yet been audited. The next session
+should start by auditing `verilog/icache.sv`, `verilog/mem.sv` (or
+`test/mem.sv` if that is the one in use), and any memory-side glue in
+`test/pipeline_test.sv`.
 
 ## What the plan originally said
 
@@ -17,7 +18,7 @@ From `doc/week4-followup-plan.md`:
 
 ## What actually happens (observed in this worktree, week4)
 
-All runs so far on this branch have produced the *same* 44-writeback tail:
+All runs so far on this branch have produced the same 44-writeback tail:
 
 ```
 PC=00000000 … PC=00000064   (26 setup/li instructions)
@@ -27,14 +28,13 @@ PC=0000006c REG[6]=00000001  (iter-2 slti)
 <HANG>
 ```
 
-The pipeline does not make further progress. Specifically:
-
-- **Simulator time stops advancing** somewhere around cyc ≈ 2192–2200. This
-  was verified by logging a `[tick N]` print once per cycle: the stream of
-  ticks stops hard between 2192 and 2200 and never prints another tick no
-  matter how long the sim runs (we tried 60s, 120s, 180s, 300s, 600s wall
-  clock). That rules out "slow but progressing" and rules in a **genuine
-  zero-time simulator spin** (combinational loop or infinite delta cycle).
+The pipeline does not make further progress. Specifically, simulator
+time stops advancing somewhere around cyc ≈ 2192–2200. Verified by
+logging a `[tick N]` print once per cycle: the stream of ticks stops
+hard between 2192 and 2200 and never prints another tick regardless of
+how long the sim runs (tried 60s, 120s, 180s, 300s, 600s wall clock).
+That rules out "slow but progressing" and points to a genuine zero-time
+simulator spin: a combinational loop or infinite delta cycle.
 
 ## Last events before the stall
 
@@ -75,110 +75,116 @@ mb=1 md=1 cdb=1 cdb_tag=4 rob_head=4 rob_cnt=5
   rs[3]: op=0a dt=0 s1r=0 s1t=7   (mul x13, waiting on add x12)
 ```
 
-This is a perfectly reasonable pipeline state: iter-2's mul-x11 just finished,
-its CDB is going out on the bus, the dependent add-x11 in the RS has been
-woken up combinationally and is trying to issue but is (correctly) blocked
-for exactly one cycle by `mult_done` raising `!mult_done` low in `issue_accept`.
-Nothing here is obviously broken at the pipeline/RS/ROB/mult level.
+This is a reasonable pipeline state. iter-2's mul-x11 just finished,
+its CDB is going out on the bus, the dependent add-x11 in the RS has
+been woken up combinationally and is trying to issue, but is correctly
+blocked for exactly one cycle by `mult_done` pulling `!mult_done` low
+in `issue_accept`. Nothing here is obviously broken at the
+pipeline/RS/ROB/mult level.
 
 ## What we ruled out
 
-1. **Hypothesis A — `mult_done` stuck high.** Ruled out. `mult_done` is the
-   registered output of the last `mult_stage` and goes high for exactly one
-   cycle per operation. `mult_busy` clears one cycle after.
-2. **Hypothesis B — `mult_busy`/`mult_done` race in `pipeline.sv:417-431`.**
-   Ruled out structurally: `issue_accept` requires `!mult_busy`, so a new
+1. Hypothesis A: `mult_done` stuck high. Ruled out. `mult_done` is the
+   registered output of the last `mult_stage` and goes high for exactly
+   one cycle per operation. `mult_busy` clears one cycle after.
+2. Hypothesis B: `mult_busy` / `mult_done` race in `pipeline.sv:417-431`.
+   Ruled out structurally. `issue_accept` requires `!mult_busy`, so a new
    mult cannot co-occur with `mult_done` of the previous one.
-3. **ROB unit tests.** `test/rob_test.sv` (newly written) passes all 10 test
-   cases on both `make rob.pass` and `make rob.syn.pass`, covering dispatch,
-   CDB complete, in-order commit, same-cycle RAT bypass, stale-clear
-   protection, x0 guard, flush, full, and wraparound. The ROB module in
-   isolation is sound.
-4. **"Nondeterminism" in the plan.** I could not reproduce nondeterminism.
-   Every run on this worktree hangs at the **same** cycle (≈2192) with the
-   **same** 44 writebacks. The hang appears to be deterministic.
+3. ROB unit tests. `test/rob_test.sv` (newly written) passes all 10 test
+   cases on both `make rob.pass` and `make rob.syn.pass`, covering
+   dispatch, CDB complete, in-order commit, same-cycle RAT bypass,
+   stale-clear protection, x0 guard, flush, full, and wraparound. The
+   ROB module in isolation is sound.
+4. "Nondeterminism" in the plan. I could not reproduce the
+   nondeterminism. Every run on this worktree hangs at the same cycle
+   (≈2192) with the same 44 writebacks. The hang is deterministic here.
 
 ## What we suspect (to check next session)
 
-The fact that *simulation time itself* stops advancing — not "the pipeline
-stops retiring but clock edges still fire" — is the tell. That almost always
-indicates a **combinational cycle** or an **X-driven delta-cycle storm** that
-causes VCS's scheduler to spin inside a single timestamp.
+Simulation time itself stops advancing. Not "the pipeline stops retiring
+but clock edges still fire" — the scheduler never leaves cycle 2192.
+That usually indicates a combinational cycle or an X-driven delta-cycle
+storm that causes VCS's scheduler to spin inside a single timestamp.
 
-Possible sources outside the modules we already audited:
+Possible sources outside the modules already audited:
 
-- **`test/mem.sv`**: the memory model. A cache miss is in flight at the hang
-  point (the icache issued a BUS_LOAD a few cycles earlier for the line at
-  PC≈0x90). If `mem.sv` has a combinational path from one of its inputs back
-  to `mem2proc_response`/`tag`/`data` that can activate under a specific
-  request pattern, it could spin here.
-- **`verilog/icache.sv`**: the icache has combinational logic for
-  `update_mem_tag`, `unanswered_miss`, and `got_mem_data`. A corner case where
-  `changed_addr`, `miss_outstanding`, and `got_mem_data` all interact with
-  `Imem2proc_response`/`_tag` could create a feedback loop, especially when
-  the cache line for the mul just resolved and the next address is already
-  issuing a new request.
-- **`verilog/pipeline.sv` CDB arbitration** (less likely): the else-if path
-  would form a loop `alu_result → cdb_value → issue_src1_value → alu_result`
-  if `issue_accept` were ever 1 simultaneously with `!mult_done`. At cyc=2192
-  `mult_done=1` so this path is inactive, but it's worth double-checking
-  there is no spurious driver on `cdb_valid` that could force the path.
-- **An X on the memory side**: if `mem2proc_tag` glitches (e.g. mem returns
-  a tag of 0 or X on a specific cycle pattern), the icache's `got_mem_data`
-  could toggle at delta-cycle resolution and never settle.
+- `test/mem.sv`: the memory model. A cache miss is in flight at the hang
+  point (the icache issued a BUS_LOAD a few cycles earlier for the line
+  at PC ≈ 0x90). If `mem.sv` has a combinational path from one of its
+  inputs back to `mem2proc_response` / `tag` / `data` that activates
+  under a specific request pattern, it could spin here.
+- `verilog/icache.sv`: the icache has combinational logic for
+  `update_mem_tag`, `unanswered_miss`, and `got_mem_data`. A corner
+  case where `changed_addr`, `miss_outstanding`, and `got_mem_data`
+  all interact with `Imem2proc_response` / `_tag` could create a
+  feedback loop, especially when the cache line for the mul just
+  resolved and the next address is already issuing a new request.
+- `verilog/pipeline.sv` CDB arbitration (less likely): the else-if
+  path would form a loop `alu_result → cdb_value → issue_src1_value →
+  alu_result` if `issue_accept` were ever 1 simultaneously with
+  `!mult_done`. At cyc=2192 `mult_done=1` so this path is inactive,
+  but worth double-checking that nothing spuriously drives `cdb_valid`
+  and forces the path.
+- An X on the memory side. If `mem2proc_tag` glitches (e.g. mem
+  returns a tag of 0 or X on a specific cycle pattern), the icache's
+  `got_mem_data` could toggle at delta-cycle resolution and never
+  settle.
 
 ## Recommended debugging next steps
 
-1. **Instrument `icache.sv` and `test/mem.sv` boundary.** Dump every cycle
+1. Instrument the `icache.sv` / `test/mem.sv` boundary. Dump every cycle
    `proc2Imem_command`, `proc2Imem_addr`, `mem2proc_response`,
    `mem2proc_tag`, `mem2proc_data`, and the icache's `current_mem_tag`,
    `miss_outstanding`, `unanswered_miss`, `got_mem_data`, and
    `icache_data[current_index].valid`. Look at cycles 2170–2200.
-2. **Force ASCII dump of VCS's convergence iteration count.** VCS has a
-   warning for combinational loops (`+warn=noTFIPC` is on but that's
+2. Force an ASCII dump of VCS's convergence iteration count. VCS has a
+   warning for combinational loops (`+warn=noTFIPC` is on but that is
    unrelated). Compile without that filter and look for
    `[SETUP_WILL_NOT_BE_MET]` or `[EVNT]` convergence warnings.
-3. **Try `+vcs+initreg+zero` and `+vcs+initreg+random`.** If zero-init
+3. Try `+vcs+initreg+zero` and `+vcs+initreg+random`. If zero-init
    reliably progresses but random-init hangs, there is an X-propagation
    somewhere even though the unit tests passed.
-4. **Run `no_hazard`, `fib`, `copy`, `saxpy`, `sampler` one-by-one** with
-   the same wall-clock budget. If they all hang at similar points involving
-   icache line boundaries, memory/icache is strongly implicated. If only
-   `mult_no_lsq` hangs, the interaction with the mult FU is relevant.
-5. **Temporarily hard-wire `MEM_LATENCY_IN_CYCLES` to 1** and see if the
-   hang goes away. If it does, it is a memory-side interaction, not a core
-   pipeline bug. (Don't commit that change — `MEM_LATENCY_IN_CYCLES` is a
-   hard constraint from the spec.)
-6. **Open Verdi on the 44-writeback state.** Once the GUI is available,
+4. Run `no_hazard`, `fib`, `copy`, `saxpy`, `sampler` one by one with
+   the same wall-clock budget. If they all hang at similar points
+   involving icache line boundaries, memory/icache is strongly
+   implicated. If only `mult_no_lsq` hangs, the interaction with the
+   mult FU is relevant.
+5. Temporarily hard-wire `MEM_LATENCY_IN_CYCLES` to 1 and see if the
+   hang goes away. If it does, it is a memory-side interaction, not a
+   core pipeline bug. Do not commit that change — `MEM_LATENCY_IN_CYCLES`
+   is a hard constraint from the spec.
+6. Open Verdi on the 44-writeback state. Once the GUI is available,
    step a single cycle past cyc=2192 and watch which signals are being
-   re-evaluated repeatedly. VCS's delta-cycle view will point at the loop.
+   re-evaluated. VCS's delta-cycle view will point at the loop.
 
-## What IS known-good after this session
+## What is known-good after this session
 
-- `test/rob_test.sv` written and committed on `week4` — `make rob.pass` and
-  `make rob.syn.pass` both green.
+- `test/rob_test.sv` written and committed on `week4`. `make rob.pass`
+  and `make rob.syn.pass` both green.
 - `make rs.pass` still green (no regression).
-- The pipeline correctly runs through all 26 setup instructions, a full
-  first iteration of the loop (16 insts including 4 muls, 4 adds, 4 srli,
+- The pipeline runs through all 26 setup instructions, a full first
+  iteration of the loop (16 insts including 4 muls, 4 adds, 4 srli,
   the addi, and a taken bne), and the first 2 instructions of iter 2
-  (addi and slti). So the core P6 dataflow — rename, dispatch, issue,
-  execute, mul, CDB broadcast, in-order commit, taken-branch redirect —
-  **is functional through at least 44 consecutive committed instructions**.
+  (addi and slti). The core P6 dataflow — rename, dispatch, issue,
+  execute, mul, CDB broadcast, in-order commit, taken-branch redirect
+  — is functional through at least 44 consecutive committed
+  instructions.
 
 ## Files touched during the investigation (all reverted at the end)
 
-- `test/pipeline_test.sv` — added `[tick]`, `[dbg cyc=…]`, per-event
-  dispatch/commit/CDB/blocked-issue logging, lowered the `debug_counter`
-  hard-halt from 50M to 2600 for fast iteration, added a state snapshot
-  block. **All of this has been reverted** to the original file before
-  moving on.
+- `test/pipeline_test.sv`: added `[tick]`, `[dbg cyc=…]`, per-event
+  dispatch/commit/CDB/blocked-issue logging, lowered the
+  `debug_counter` hard-halt from 50M to 2600 for fast iteration, added
+  a state snapshot block. All of this has been reverted to the
+  original file before moving on.
 
 ## Take-away
 
-The hang is **real and deterministic**, but its root cause is almost
-certainly not in `rob.sv`, `rs.sv`, or `pipeline.sv` proper — those do the
-right thing right up until simulator time stops. The next session should
-audit `test/mem.sv` + `verilog/icache.sv` + the mem-bus glue in
-`pipeline.sv`, and look for a combinational loop or delta-cycle storm
-that only activates when a cache line for the iter-2 mul chain is
-being fetched concurrently with the mul FU's CDB broadcast.
+The hang is real and deterministic, but its root cause is almost
+certainly not in `rob.sv`, `rs.sv`, or `pipeline.sv` proper. Those all
+do the right thing right up until simulator time stops. The next
+session should audit `test/mem.sv`, `verilog/icache.sv`, and the
+mem-bus glue in `pipeline.sv`, and look for a combinational loop or
+delta-cycle storm that only activates when a cache line for the iter-2
+mul chain is being fetched concurrently with the mul FU's CDB
+broadcast.
