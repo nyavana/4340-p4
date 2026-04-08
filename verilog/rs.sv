@@ -101,16 +101,21 @@ module rs #(
     end
 
     // pick first ready entry to issue
+    // Use registered src_ready (not src_ready_eff) to avoid combinational loop:
+    // src1_ready_eff depends on cdb_valid, which depends on issue_accept,
+    // which depends on issue_found — using _eff here creates a cycle that
+    // causes oscillation when a lower-index entry is woken by the CDB of
+    // the currently-selected higher-index entry.
     always_comb begin
         integer i;
-        
+
         issue_found = 1'b0;
         issue_idx   = '0;
         for (i = 0; i < RS_SIZE; i++) begin
             if (!issue_found &&
                 entries[i].busy &&
-                src1_ready_eff[i] &&
-                src2_ready_eff[i]) begin
+                entries[i].src1_ready &&
+                entries[i].src2_ready) begin
                 issue_found = 1'b1;
                 issue_idx   = i[$clog2(RS_SIZE)-1:0];
             end
