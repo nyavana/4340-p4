@@ -10,6 +10,40 @@ This README has information on changes from project 3 and specific
 requirements on your processor for submitting to the autograder.
 
 
+## Project Overview
+
+This is an out-of-order RISC-V processor built on top of the VeriSimpleV
+pipeline from Project 3. It's a P6-style design: instructions execute
+out-of-order but commit in order through a ReOrder Buffer. The Register
+Alias Table sits inside the ROB rather than as a separate module, and a
+single Common Data Bus broadcasts results back to anything still waiting.
+
+### Base design
+
+- Architecture: P6 out-of-order with in-order commit, so branch mispredicts
+  and exceptions stay precise.
+- Functional units: 2 simple ALUs (1 cycle), 1 pipelined multiplier (the
+  one from Project 2), 1 branch target unit, 1 memory address unit.
+- Caches: separate I-cache and D-cache, 256 bytes each. 512 bytes total is
+  a hard cap from the spec.
+- Branch prediction: a BTB plus a bimodal direction predictor.
+
+### Planned advanced features
+
+The proposal aims for two of the harder features and a handful of simpler
+ones:
+
+- 2-way superscalar (hard): widen fetch, issue, execute, and retire to two
+  instructions per cycle while still committing in order.
+- Early tag broadcast (hard): push destination tags into the wakeup logic
+  the moment execution knows the result is ready, instead of waiting on
+  the CDB.
+- A smarter branch predictor than plain bimodal.
+- I-cache and/or D-cache prefetching. Memory latency is 100 ns, so
+  anything that hides it helps.
+- Set-associative caches instead of direct-mapped.
+
+
 ## Getting Started
 
 Start the project by working on your first module, either the ReOrder
@@ -180,3 +214,34 @@ make vis_simv          <- compile the vtuber executable from VTUBER and SOURCES
 make clean            <- remove per-run files and compiled executable files
 make nuke             <- remove all files created from make rules
 ```
+
+## Progress: Week 3 and Week 4
+
+### Week 3
+
+There were three branches, and none of them built end-to-end on their own.
+`milestone1` had `rs.sv` but no ROB. `milestone2` had `rob.sv` and a
+refactored `pipeline.sv` but no `rs.sv`. `release` was the baseline plus
+notes.
+
+Week 3 was the merge that fixed this. `milestone2` got brought onto a new
+`week3` branch rooted at `milestone1`, with conflicts in `Makefile` and
+`verilog/sys_defs.svh` resolved by hand. After the merge, `make simv`
+compiled cleanly for the first time and `make no_hazard.out` ran to
+completion. `make mult_no_lsq.out` was flaky and got punted to Week 4.
+
+### Week 4
+
+`test/rob_test.sv` was added: a unit testbench for the ROB covering
+dispatch, CDB complete, in-order commit despite out-of-order completion,
+same-cycle RAT bypass, stale-clear protection, the `x0` guard, flush, full,
+and wraparound. Both `make rob.pass` and `make rob.syn.pass` are green.
+
+The other Week 4 thread was the `mult_no_lsq` hang. On this worktree it
+isn't actually nondeterministic; it's deterministic. Simulator time stops
+advancing around cycle 2192, after 44 correct writebacks that cover the
+full setup phase and the first loop iteration. The RS, ROB, multiplier,
+and core pipeline dataflow all check out — they do the right thing right
+up until time freezes. The likely culprit is a combinational loop or a
+delta-cycle storm somewhere at the `icache.sv` / `test/mem.sv` boundary,
+and that audit is deferred to the next session.
