@@ -241,7 +241,127 @@ The other Week 4 thread was the `mult_no_lsq` hang. On this worktree it
 isn't actually nondeterministic; it's deterministic. Simulator time stops
 advancing around cycle 2192, after 44 correct writebacks that cover the
 full setup phase and the first loop iteration. The RS, ROB, multiplier,
-and core pipeline dataflow all check out — they do the right thing right
+and core pipeline dataflow all check out, they do the right thing right
 up until time freezes. The likely culprit is a combinational loop or a
 delta-cycle storm somewhere at the `icache.sv` / `test/mem.sv` boundary,
 and that audit is deferred to the next session.
+
+## Progress: Milestone 3 (memory operations)
+
+Milestone 3 added the memory subsystem. The pipeline now runs loads and
+stores end-to-end through a Load-Store Queue and a write-back data cache,
+the byte/half/word RV32IM memory ops all work, and JAL/JALR finally write
+the return address into the destination register. That last one was a
+milestone 2 bug nobody noticed until the first C program tried to call a
+function and crashed on a wild jump.
+
+For the full writeup of what changed and why, see
+[`doc/milestone3-report.md`](doc/milestone3-report.md). The per-program
+table is in [`doc/milestone3-results.md`](doc/milestone3-results.md).
+
+### What got built
+
+- `verilog/dcache.sv`: 32-line direct-mapped, write-back, write-allocate
+  data cache. 256 bytes, the spec cap. Sub-word stores stay inside the
+  cache via byte enables; only line evictions touch main memory.
+- `verilog/lsq.sv`: combined load/store FIFO. It snoops the CDB to wake
+  up base and data operands, has an internal AGU for the address, and
+  only the head entry talks to the cache. Stores wait for the ROB to
+  retire them before they touch the cache, so architectural memory is
+  never written by a mis-speculated path.
+- `verilog/pipeline.sv` rewritten: memory ops bypass the RS at dispatch
+  and go directly into the LSQ; the inline single-line load FU is gone;
+  CDB arbitration is now MULT > LSQ load complete > ALU; bus arbitration
+  uses combinational `*_drives` signals to mask each cache's view of
+  `mem2proc_response` to the cycle it actually drove the bus.
+- `verilog/rob.sv`: new `is_store` field, `store_done` sideband, and the
+  JAL/JALR return-address fix (commit value override for branches with a
+  non-zero destination register).
+- `test/dcache_test.sv` and `test/lsq_test.sv`: unit testbenches for the
+  two new modules. Both pass in sim and synth.
+
+### Module test status
+
+| testbench | sim          | synth        |
+|-----------|--------------|--------------|
+| `mult`    | `@@@ Passed` | `@@@ Passed` |
+| `rob`     | `@@@ Passed` | `@@@ Passed` |
+| `rs`      | `@@@ Passed` | `@@@ Passed` |
+| `dcache`  | `@@@ Passed` | `@@@ Passed` |
+| `lsq`     | `@@@ Passed` | `@@@ Passed` |
+
+Synthesis slack is positive on both new modules: `dcache` ≈ 587 ps,
+`lsq` ≈ 0.44 ps (the LSQ is the tight one and would be the first thing
+to gate a clock-period reduction).
+
+### Full pipeline test results
+
+18 of 33 programs in `programs/` reach `HALTED_ON_WFI`, up from roughly
+30% on the milestone 2 baseline. The new passes are mostly C programs
+that needed the JAL/JALR fix to get past their first function call.
+
+```
+                  milestone 3 program test results
+
+  passes  ##################                          18 / 33  (55%)
+  fails   ###############                             15 / 33  (45%)
+          |    |    |    |    |    |    |
+          0    5    10   15   20   25   30
+```
+
+Pass / fail per program:
+
+```
+  PASS                                FAIL
+  ----------------------------------  ----------------------------------
+  halt              106 cycles        fib                 hangs
+  no_hazard         731 cycles        parallel            hangs (m2 bug)
+  evens             1178 cycles       mult_no_lsq         hangs (m2 bug)
+  evens_long        2979 cycles       mult                hangs
+  haha              940 cycles        copy                hangs
+  insertion         3630 cycles       alexnet             timeout
+  btest1            17090 cycles      backtrack           hangs
+  btest2            27467 cycles      bfs                 hangs
+  fib_long          6521 cycles       dft                 timeout
+  fib_rec           38011 cycles      graph               hangs
+  sampler           6273 cycles       matrix_mult_rec     hangs
+  saxpy             4599 cycles       mergesort           hangs
+  copy_long         5861 cycles       outer_product       hangs
+  basic_malloc      50037 cycles      quicksort           hangs
+  fc_forward        55381 cycles      sort_search         hangs
+  insertionsort     842214 cycles
+  omegalul          3964 cycles
+  priority_queue    78572 cycles
+```
+
+What's new since milestone 2:
+
+- `saxpy` and `copy_long` are the first programs with real loads and
+  stores in a loop to finish.
+- `basic_malloc`, `fc_forward`, `insertionsort`, `omegalul`, and
+  `priority_queue` are the first five C programs to finish. They all
+  depend on the JAL/JALR return-address fix.
+- `fib_rec` and `sampler` were also unblocked by JAL/JALR.
+
+The remaining failures cluster on tight memory loops with no slack
+between instructions. `mult_no_lsq` and `parallel` already hung on the
+milestone 2 baseline at the same commit count, so part of this is
+inherited rather than caused by the LSQ. The `copy` program hangs at
+13 commits but its NOP-padded twin `copy_long` runs cleanly in 5861
+cycles. Diagnosing the exact deadlock is the top item for the next
+debugging session; the most likely culprit is a missed wake-up between
+the LSQ head moving forward and the next store asserting `store_ready`
+to a ROB entry the ROB has just retired.
+
+### What's deferred
+
+- Diagnose and fix the tight-loop hang. Most likely culprit: a missed
+  wake-up between the LSQ head moving forward and the next store
+  asserting `store_ready` to a ROB entry the ROB has just retired.
+- Store-to-load forwarding. The current head-only LSQ serializes all
+  memory ops; a forwarding path would let independent loads bypass an
+  in-flight store.
+- LSQ flush on branch mispredict. The flush input is wired but not
+  exercised, since branches still stall the front-end and no speculation
+  reaches the LSQ.
+- Full pipeline synthesis with timing closure.
