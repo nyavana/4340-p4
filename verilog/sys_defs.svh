@@ -24,13 +24,18 @@
 `define N 1
 
 // sizes
-`define ROB_SZ 8 // temporary only for testing
-`define RS_SZ 8 // temporary only for testing
+`define ROB_SZ 8
+`define RS_SZ 8
 `define PHYS_REG_SZ (32 + `ROB_SZ)
 
 // worry about these later
 `define BRANCH_PRED_SZ xx
-`define LSQ_SZ 4
+`define LSQ_SZ 8
+
+// D-cache geometry: 32 lines x 64 bits = 256 bytes, the cap from the project
+// spec. The cache is direct-mapped, write-back, write-allocate; see
+// verilog/dcache.sv for the state machine.
+`define DCACHE_LINES 32
 
 // functional units (you should decide if you want more or fewer types of FUs)
 `define NUM_FU_ALU 1

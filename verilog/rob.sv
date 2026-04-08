@@ -16,6 +16,7 @@ module rob #(
     input  logic             dispatch_halt,
     input  logic             dispatch_illegal,
     input  logic             dispatch_is_branch,
+    input  logic             dispatch_is_store,  // milestone 3: store ops sit in the LSQ until commit
 
     output logic             rob_full,
     output logic [TAG_W-1:0] dispatch_tag,       // ROB index assigned to new entry (= current tail)
@@ -27,8 +28,17 @@ module rob #(
     input  logic             cdb_take_branch,
     input  logic [XLEN-1:0]  cdb_branch_target,
 
+    // ---- Store-ready sideband from the LSQ ----
+    // The CDB only has bandwidth for one ALU/MULT/LOAD broadcast per cycle.
+    // To avoid spending it on stores (which carry no register value), the
+    // LSQ uses this dedicated port to mark a store entry as ready to commit.
+    input  logic             store_done_valid,
+    input  logic [TAG_W-1:0] store_done_tag,
+
     // ---- Commit side (in-order retirement at head) ----
     output logic             commit_valid,
+    output logic [TAG_W-1:0] commit_tag,         // milestone 3: head index, for LSQ store release
+    output logic             commit_is_store,    // milestone 3: tells LSQ "this commit is a store"
     output logic [4:0]       commit_dest_reg,
     output logic [XLEN-1:0]  commit_value,
     output logic [XLEN-1:0]  commit_NPC,
@@ -61,6 +71,7 @@ module rob #(
     typedef struct packed {
         logic            busy;
         logic            ready;         // execution complete, value valid
+        logic            is_store;      // store entries take their data path through the LSQ
         logic [4:0]      dest_reg;
         logic [XLEN-1:0] value;
         logic [XLEN-1:0] NPC;
@@ -98,8 +109,17 @@ module rob #(
     assign dispatch_tag = tail;   // tag stamped on the instruction being dispatched
 
     assign commit_valid         = entries[head].busy && entries[head].ready;
+    assign commit_tag           = head;
+    assign commit_is_store      = entries[head].is_store;
     assign commit_dest_reg      = entries[head].dest_reg;
-    assign commit_value         = entries[head].value;
+    // JAL / JALR write the return address (PC+4 = NPC) into rd.  The CDB
+    // value for branches is always 0, so the ROB overrides the commit
+    // value with the stored NPC when this entry is a branch with a
+    // non-zero destination (which is exactly the JAL/JALR case -
+    // conditional branches always have dest_reg=0).
+    assign commit_value         = (entries[head].is_branch && entries[head].dest_reg != 5'd0)
+                                  ? entries[head].NPC
+                                  : entries[head].value;
     assign commit_NPC           = entries[head].NPC;
     assign commit_halt          = entries[head].halt;
     assign commit_illegal       = entries[head].illegal;
@@ -151,7 +171,7 @@ module rob #(
 
     // -------------------------------------------------------
     // Next-state combinational logic
-    // Priority: flush > CDB complete > commit > dispatch
+    // Priority: flush > CDB complete / store-done > commit > dispatch
     // -------------------------------------------------------
     always_comb begin
         integer i;
@@ -186,6 +206,14 @@ module rob #(
                 next_entries[cdb_tag].branch_target = cdb_branch_target;
             end
 
+            // 1b) Store-done sideband: stores have no register value, so the LSQ
+            //     marks them ready via this dedicated path instead of competing
+            //     for the CDB.  Idempotent if asserted across multiple cycles.
+            if (store_done_valid) begin
+                next_entries[store_done_tag].ready = 1'b1;
+                next_entries[store_done_tag].value = '0;
+            end
+
             // 2) Commit: retire head entry if it is ready
             if (commit_valid) begin
                 // Clear RAT only if this entry is still the "latest" writer
@@ -203,6 +231,7 @@ module rob #(
             if (dispatch_valid && !rob_full) begin
                 next_entries[tail].busy          = 1'b1;
                 next_entries[tail].ready         = 1'b0;
+                next_entries[tail].is_store      = dispatch_is_store;
                 next_entries[tail].dest_reg      = dispatch_dest_reg;
                 next_entries[tail].NPC           = dispatch_NPC;
                 next_entries[tail].halt          = dispatch_halt;

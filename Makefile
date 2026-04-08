@@ -177,7 +177,7 @@ GREP = grep -E --color=auto
 # - with dependencies: 'rob.simv', 'rob.cov', and 'synth/rob.vg'
 
 # TODO: add more modules here
-TESTED_MODULES = mult rob rs
+TESTED_MODULES = mult rob rs dcache lsq
 
 MODULE = pipeline
 
@@ -193,8 +193,18 @@ $(call DEPS,mult): $(MULT_DEPS)
 ROB_DEPS =
 $(call DEPS,rob): $(ROB_DEPS)
 
-RS_DEPS = 
+RS_DEPS =
 $(call DEPS,rs): $(RS_DEPS)
+
+# Milestone 3: D-cache and LSQ. dcache is standalone; lsq's testbench
+# uses a small standalone stub for the dcache and does not pull in the
+# real dcache.sv (the LSQ-cache integration is exercised end-to-end by
+# the full pipeline).
+DCACHE_DEPS =
+$(call DEPS,dcache): $(DCACHE_DEPS)
+
+LSQ_DEPS =
+$(call DEPS,lsq): $(LSQ_DEPS)
 
 # This allows you to use the following make targets:
 # make <module>.pass   <- greps for "@@@ Passed" or "@@@ Incorrect" in the output
@@ -333,6 +343,8 @@ SOURCES = verilog/pipeline.sv \
           verilog/rs.sv \
           verilog/regfile.sv \
           verilog/icache.sv \
+          verilog/dcache.sv \
+          verilog/lsq.sv \
           verilog/mult.sv \
           verilog/mult_stage.sv \
 

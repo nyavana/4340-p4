@@ -34,6 +34,7 @@ module rob_test;
   logic                 dispatch_halt;
   logic                 dispatch_illegal;
   logic                 dispatch_is_branch;
+  logic                 dispatch_is_store;
 
   logic                 rob_full;
   logic [TAG_W-1:0]     dispatch_tag;
@@ -45,8 +46,14 @@ module rob_test;
   logic                 cdb_take_branch;
   logic [XLEN-1:0]      cdb_branch_target;
 
+  // store-done sideband
+  logic                 store_done_valid;
+  logic [TAG_W-1:0]     store_done_tag;
+
   // commit
   logic                 commit_valid;
+  logic [TAG_W-1:0]     commit_tag;
+  logic                 commit_is_store;
   logic [4:0]           commit_dest_reg;
   logic [XLEN-1:0]      commit_value;
   logic [XLEN-1:0]      commit_NPC;
@@ -83,6 +90,7 @@ module rob_test;
     .dispatch_halt(dispatch_halt),
     .dispatch_illegal(dispatch_illegal),
     .dispatch_is_branch(dispatch_is_branch),
+    .dispatch_is_store(dispatch_is_store),
 
     .rob_full(rob_full),
     .dispatch_tag(dispatch_tag),
@@ -93,7 +101,12 @@ module rob_test;
     .cdb_take_branch(cdb_take_branch),
     .cdb_branch_target(cdb_branch_target),
 
+    .store_done_valid(store_done_valid),
+    .store_done_tag(store_done_tag),
+
     .commit_valid(commit_valid),
+    .commit_tag(commit_tag),
+    .commit_is_store(commit_is_store),
     .commit_dest_reg(commit_dest_reg),
     .commit_value(commit_value),
     .commit_NPC(commit_NPC),
@@ -137,12 +150,16 @@ module rob_test;
       dispatch_halt      = 1'b0;
       dispatch_illegal   = 1'b0;
       dispatch_is_branch = 1'b0;
+      dispatch_is_store  = 1'b0;
 
       cdb_valid          = 1'b0;
       cdb_tag            = '0;
       cdb_value          = '0;
       cdb_take_branch    = 1'b0;
       cdb_branch_target  = '0;
+
+      store_done_valid   = 1'b0;
+      store_done_tag     = '0;
 
       query1_arch_reg    = 5'd0;
       query2_arch_reg    = 5'd0;

@@ -1,6 +1,23 @@
 `include "verilog/sys_defs.svh"
 `include "verilog/ISA.svh"
 
+// =====================================================================
+// Pipeline top: 1-wide P6 out-of-order RISC-V core with the milestone-3
+// memory subsystem in place.
+//
+// Memory subsystem changes from milestone 2:
+//   - The inline single-line load FU is gone.  Loads and stores now go
+//     through the LSQ (verilog/lsq.sv) and the D-cache (verilog/dcache.sv).
+//   - Memory ops bypass the RS entirely so the LSQ can keep its entries
+//     in program order.  Non-memory ops still go through the RS.
+//   - Stores are held in the LSQ until the ROB commits them, then they
+//     are released to the cache.  Architectural memory is never written
+//     speculatively.
+//   - Bus arbitration is now between icache and dcache, with the dcache
+//     having priority.  A 1-cycle owner-tracking flag routes the
+//     mem2proc_response back to the cache that issued the request.
+// =====================================================================
+
 module pipeline (
     input        clock,
     input        reset,
@@ -23,7 +40,7 @@ module pipeline (
     localparam TAG_W = $clog2(`ROB_SZ);
 
     // ================================================================
-    // ALL wire/logic declarations (must precede any use in SV)
+    // Wire / logic declarations
     // ================================================================
 
     // PC / fetch
@@ -35,6 +52,7 @@ module pipeline (
     logic branch_pending;
     logic stall;
     logic dispatch_fire;
+    logic is_mem_op;
 
     // ICache
     logic [1:0]       proc2Imem_command;
@@ -58,6 +76,8 @@ module pipeline (
     logic             rob_full;
     logic [TAG_W-1:0] rob_dispatch_tag;
     logic             rob_commit_valid;
+    logic [TAG_W-1:0] rob_commit_tag;
+    logic             rob_commit_is_store;
     logic [4:0]       rob_commit_dest_reg;
     logic [`XLEN-1:0] rob_commit_value;
     logic [`XLEN-1:0] rob_commit_NPC;
@@ -85,10 +105,16 @@ module pipeline (
     logic             dispatch_src1_ready, dispatch_src2_ready;
     logic [TAG_W-1:0] dispatch_src1_tag,   dispatch_src2_tag;
     logic [`XLEN-1:0] dispatch_src1_value, dispatch_src2_value;
+    logic             dispatch_data_ready;
+    logic [TAG_W-1:0] dispatch_data_tag;
+    logic [`XLEN-1:0] dispatch_data_value;
     logic [7:0]       dispatch_op;
+    logic [`XLEN-1:0] dispatch_imm;
+    logic [1:0]       dispatch_mem_size;
+    logic             dispatch_is_signed;
 
     // Issue routing
-    logic issue_is_mult, issue_is_branch, issue_is_load, issue_accept;
+    logic issue_is_mult, issue_is_branch, issue_accept;
 
     // Branch buffer
     logic [`XLEN-1:0] branch_target_buf;
@@ -114,12 +140,28 @@ module pipeline (
     logic             cdb_take_branch;
     logic [`XLEN-1:0] cdb_branch_target;
 
-    // Load FU
-    logic             load_busy, load_done, load_requesting;
-    logic [TAG_W-1:0] load_dest_tag_reg;
-    logic [`XLEN-1:0] load_addr_reg;
-    logic [3:0]       load_mem_tag;
-    logic [`XLEN-1:0] load_result;
+    // LSQ
+    logic             lsq_full;
+    logic             lsq_dcache_load, lsq_dcache_store;
+    logic [`XLEN-1:0] lsq_dcache_addr;
+    logic [63:0]      lsq_dcache_wr_data;
+    logic [7:0]       lsq_dcache_wr_be;
+    logic             lsq_load_complete_valid;
+    logic [TAG_W-1:0] lsq_load_complete_tag;
+    logic [`XLEN-1:0] lsq_load_complete_value;
+    logic             lsq_load_complete_accept;
+    logic             lsq_store_ready_valid;
+    logic [TAG_W-1:0] lsq_store_ready_tag;
+
+    // DCache
+    logic [63:0]      dcache_rd_data;
+    logic             dcache_done;
+    logic             dcache_busy;
+    logic [1:0]       dc_proc2mem_command;
+    logic [`XLEN-1:0] dc_proc2mem_addr;
+    logic [63:0]      dc_proc2mem_data;
+    logic [3:0]       dcache_resp_in;
+    logic [3:0]       icache_resp_in;
 
     // Error status latch
     EXCEPTION_CODE error_status_reg;
@@ -131,38 +173,66 @@ module pipeline (
     assign fetched_inst = PC_reg[2] ? Icache_data_out[63:32] : Icache_data_out[31:0];
     assign fetched_NPC  = PC_reg + 4;
 
-    assign stall        = !Icache_valid_out || rs_full || rob_full || branch_pending;
+    assign is_mem_op = dec_rd_mem || dec_wr_mem;
+
+    assign stall = !Icache_valid_out || rob_full || branch_pending ||
+                   (is_mem_op ? lsq_full : rs_full);
     assign dispatch_fire = !stall;
 
     // op[7]=rd_mem, op[6]=uncond_branch, op[5]=cond_branch, op[4:0]=alu_func
-    assign dispatch_op  = {dec_rd_mem, dec_uncond_branch, dec_cond_branch, dec_alu_func};
+    assign dispatch_op   = {dec_rd_mem, dec_uncond_branch, dec_cond_branch, dec_alu_func};
+
+    // mem_size from funct3[1:0] (00=BYTE, 01=HALF, 10=WORD)
+    assign dispatch_mem_size  = fetched_inst.r.funct3[1:0];
+    assign dispatch_is_signed = !fetched_inst.r.funct3[2];
+
+    // Dispatched immediate (sign-extended I-imm for loads, S-imm for stores)
+    always_comb begin
+        if (dec_wr_mem)
+            dispatch_imm = `RV32_signext_Simm(fetched_inst);
+        else
+            dispatch_imm = `RV32_signext_Iimm(fetched_inst);
+    end
 
     assign issue_is_mult   = (rs_issue_op[4:0] >= 5'(ALU_MUL)) &&
                              (rs_issue_op[4:0] <= 5'(ALU_MULHU));
     assign issue_is_branch = rs_issue_op[5] | rs_issue_op[6];
-    assign issue_is_load   = rs_issue_op[7];
     assign issue_accept    = rs_issue_valid &&
-                             (issue_is_mult ? !mult_busy :
-                              issue_is_load ? !load_busy :
-                                              !mult_done && !load_done);
+                             (issue_is_mult ? !mult_busy
+                                            : !mult_done && !lsq_load_complete_valid);
 
     assign alu_signed_a = rs_issue_src1_value;
     assign alu_signed_b = rs_issue_src2_value;
     assign br_signed_a  = rs_issue_src1_value;
     assign br_signed_b  = rs_issue_src2_value;
 
-    // Load FU combinational signals
-    assign load_requesting = load_busy && (load_mem_tag == 4'b0);
-    assign load_done       = load_busy && (load_mem_tag != 4'b0) &&
-                             (mem2proc_tag == load_mem_tag);
-    assign load_result     = load_addr_reg[2] ? mem2proc_data[63:32]
-                                              : mem2proc_data[31:0];
+    // ----------------------------------------------------------------
+    // Bus arbitration: dcache has priority over icache.
+    //
+    // The same `icache_drives` / `dcache_drives` signals are used both
+    // for the bus mux (combinational, drives the current cycle) and for
+    // the response routing read inside the cache's always_ff at the
+    // next posedge.  Inside the always_ff, comb signals reflect the
+    // PREVIOUS cycle's register values, so reading icache_drives there
+    // gives "did icache drive last cycle" - exactly the cycle the
+    // response on mem2proc_response was allocated for.  No additional
+    // delay register is needed.
+    // ----------------------------------------------------------------
+    wire dcache_drives = (dc_proc2mem_command != BUS_NONE);
+    wire icache_drives = !dcache_drives && (proc2Imem_command != BUS_NONE);
 
-    // Memory bus: dcache (load) has priority over icache
-    assign proc2mem_command = load_requesting ? BUS_LOAD           : proc2Imem_command;
-    assign proc2mem_addr    = load_requesting ? {load_addr_reg[`XLEN-1:3], 3'b0}
-                                              : proc2Imem_addr;
-    assign proc2mem_data    = '0;
+    assign proc2mem_command = dcache_drives ? dc_proc2mem_command :
+                              icache_drives ? proc2Imem_command   : BUS_NONE;
+    assign proc2mem_addr    = dcache_drives ? dc_proc2mem_addr    : proc2Imem_addr;
+    assign proc2mem_data    = dcache_drives ? dc_proc2mem_data    : 64'b0;
+
+    // Mask each cache's view of mem2proc_response so it only sees
+    // responses for requests IT drove.  At the next posedge when the
+    // cache's always_ff samples the comb signals, icache_drives /
+    // dcache_drives reflect the PREVIOUS cycle's register state -
+    // exactly the cycle during which the response was allocated.
+    assign icache_resp_in = icache_drives ? mem2proc_response : 4'b0;
+    assign dcache_resp_in = dcache_drives ? mem2proc_response : 4'b0;
 
     // Pipeline outputs
     assign pipeline_completed_insts = {3'b0, rob_commit_valid};
@@ -190,11 +260,9 @@ module pipeline (
     icache icache_0 (
         .clock              (clock),
         .reset              (reset),
-        // Mask memory response/tag when dcache is using the bus,
-        // so icache doesn't misinterpret dcache's transaction as its own.
-        .Imem2proc_response (load_requesting ? 4'b0 : mem2proc_response),
+        .Imem2proc_response (icache_resp_in),
         .Imem2proc_data     (mem2proc_data),
-        .Imem2proc_tag      (load_done ? 4'b0 : mem2proc_tag),
+        .Imem2proc_tag      (mem2proc_tag),
         .proc2Icache_addr   ({PC_reg[`XLEN-1:3], 3'b0}),
         .proc2Imem_command  (proc2Imem_command),
         .proc2Imem_addr     (proc2Imem_addr),
@@ -236,12 +304,12 @@ module pipeline (
     );
 
     // ================================================================
-    // Src operand resolution (opa/opb mux + RAT override)
+    // Src1 / src2 / store-data operand resolution
     // ================================================================
 
-    // src1: depends on opa_select or branch (always rs1 for cond branch)
+    // src1: rs1 for branches/mem ops or when opa_select=OPA_IS_RS1, else const
     always_comb begin
-        if (dec_cond_branch || (dec_opa_select == OPA_IS_RS1)) begin
+        if (dec_cond_branch || is_mem_op || (dec_opa_select == OPA_IS_RS1)) begin
             if (!rat_q1_pending) begin
                 dispatch_src1_ready = 1'b1;
                 dispatch_src1_tag   = '0;
@@ -256,7 +324,6 @@ module pipeline (
                 dispatch_src1_value = '0;
             end
         end else begin
-            // Constant operand (PC, NPC, 0)
             dispatch_src1_ready = 1'b1;
             dispatch_src1_tag   = '0;
             case (dec_opa_select)
@@ -267,7 +334,8 @@ module pipeline (
         end
     end
 
-    // src2: depends on opb_select or branch (always rs2 for cond branch)
+    // src2: used by RS for ALU/branch operands. Memory ops do NOT
+    // go through the RS so this resolver doesn't have to handle them.
     always_comb begin
         if (dec_cond_branch || (dec_opb_select == OPB_IS_RS2)) begin
             if (!rat_q2_pending) begin
@@ -284,7 +352,6 @@ module pipeline (
                 dispatch_src2_value = '0;
             end
         end else begin
-            // Immediate constant
             dispatch_src2_ready = 1'b1;
             dispatch_src2_tag   = '0;
             case (dec_opb_select)
@@ -295,6 +362,24 @@ module pipeline (
                 OPB_IS_J_IMM: dispatch_src2_value = `RV32_signext_Jimm(fetched_inst);
                 default:      dispatch_src2_value = '0;
             endcase
+        end
+    end
+
+    // store-data: always rs2 for the LSQ. The decoder gives stores
+    // opb_select=OPB_IS_S_IMM, so we can't reuse dispatch_src2 here.
+    always_comb begin
+        if (!rat_q2_pending) begin
+            dispatch_data_ready = 1'b1;
+            dispatch_data_tag   = '0;
+            dispatch_data_value = rf_rs2_value;
+        end else if (rat_q2_ready) begin
+            dispatch_data_ready = 1'b1;
+            dispatch_data_tag   = rat_q2_tag;
+            dispatch_data_value = rat_q2_value;
+        end else begin
+            dispatch_data_ready = 1'b0;
+            dispatch_data_tag   = rat_q2_tag;
+            dispatch_data_value = '0;
         end
     end
 
@@ -312,6 +397,7 @@ module pipeline (
         .dispatch_halt        (dec_halt),
         .dispatch_illegal     (dec_illegal),
         .dispatch_is_branch   (dec_cond_branch || dec_uncond_branch),
+        .dispatch_is_store    (dec_wr_mem),
 
         .rob_full             (rob_full),
         .dispatch_tag         (rob_dispatch_tag),
@@ -322,7 +408,12 @@ module pipeline (
         .cdb_take_branch      (cdb_take_branch),
         .cdb_branch_target    (cdb_branch_target),
 
+        .store_done_valid     (lsq_store_ready_valid),
+        .store_done_tag       (lsq_store_ready_tag),
+
         .commit_valid         (rob_commit_valid),
+        .commit_tag           (rob_commit_tag),
+        .commit_is_store      (rob_commit_is_store),
         .commit_dest_reg      (rob_commit_dest_reg),
         .commit_value         (rob_commit_value),
         .commit_NPC           (rob_commit_NPC),
@@ -346,14 +437,14 @@ module pipeline (
     );
 
     // ================================================================
-    // RS
+    // RS - non-memory ops only
     // ================================================================
     rs rs_0 (
         .clock               (clock),
         .reset               (reset),
         .flush               (1'b0),
 
-        .dispatch_valid      (dispatch_fire),
+        .dispatch_valid      (dispatch_fire && !is_mem_op),
         .dispatch_op         (dispatch_op),
         .dispatch_dest_tag   (rob_dispatch_tag),
 
@@ -377,6 +468,87 @@ module pipeline (
         .issue_dest_tag      (rs_issue_dest_tag),
         .issue_src1_value    (rs_issue_src1_value),
         .issue_src2_value    (rs_issue_src2_value)
+    );
+
+    // ================================================================
+    // LSQ - memory ops only
+    // ================================================================
+    lsq lsq_0 (
+        .clock               (clock),
+        .reset               (reset),
+        .flush               (1'b0),
+
+        .dispatch_valid      (dispatch_fire && is_mem_op),
+        .dispatch_is_store   (dec_wr_mem),
+        .dispatch_rob_tag    (rob_dispatch_tag),
+        .dispatch_mem_size   (dispatch_mem_size),
+        .dispatch_is_signed  (dispatch_is_signed),
+
+        .dispatch_base_ready (dispatch_src1_ready),
+        .dispatch_base_tag   (dispatch_src1_tag),
+        .dispatch_base_value (dispatch_src1_value),
+
+        .dispatch_data_ready (dispatch_data_ready),
+        .dispatch_data_tag   (dispatch_data_tag),
+        .dispatch_data_value (dispatch_data_value),
+
+        .dispatch_imm        (dispatch_imm),
+
+        .lsq_full            (lsq_full),
+
+        .cdb_valid           (cdb_valid),
+        .cdb_tag             (cdb_tag),
+        .cdb_value           (cdb_value),
+
+        .store_ready_valid   (lsq_store_ready_valid),
+        .store_ready_tag     (lsq_store_ready_tag),
+
+        .rob_commit_valid    (rob_commit_valid),
+        .rob_commit_tag      (rob_commit_tag),
+
+        .dcache_load         (lsq_dcache_load),
+        .dcache_store        (lsq_dcache_store),
+        .dcache_addr         (lsq_dcache_addr),
+        .dcache_wr_data      (lsq_dcache_wr_data),
+        .dcache_wr_be        (lsq_dcache_wr_be),
+        .dcache_done         (dcache_done),
+        .dcache_rd_data      (dcache_rd_data),
+
+        .load_complete_valid (lsq_load_complete_valid),
+        .load_complete_tag   (lsq_load_complete_tag),
+        .load_complete_value (lsq_load_complete_value),
+        .load_complete_accept(lsq_load_complete_accept)
+    );
+
+    // The LSQ load broadcast is accepted whenever no MULT result is on
+    // the CDB this cycle.  When MULT wins arbitration the LSQ holds the
+    // value in its per-entry buffer and re-asserts next cycle.
+    assign lsq_load_complete_accept = lsq_load_complete_valid && !mult_done;
+
+    // ================================================================
+    // D-Cache
+    // ================================================================
+    dcache dcache_0 (
+        .clock              (clock),
+        .reset              (reset),
+
+        .Dmem2proc_response (dcache_resp_in),
+        .Dmem2proc_data     (mem2proc_data),
+        .Dmem2proc_tag      (mem2proc_tag),
+
+        .proc_load          (lsq_dcache_load),
+        .proc_store         (lsq_dcache_store),
+        .proc_addr          (lsq_dcache_addr),
+        .proc_wr_data       (lsq_dcache_wr_data),
+        .proc_wr_be         (lsq_dcache_wr_be),
+
+        .proc_rd_data       (dcache_rd_data),
+        .proc_done          (dcache_done),
+        .proc_busy          (dcache_busy),
+
+        .proc2Dmem_command  (dc_proc2mem_command),
+        .proc2Dmem_addr     (dc_proc2mem_addr),
+        .proc2Dmem_data     (dc_proc2mem_data)
     );
 
     // ================================================================
@@ -452,39 +624,6 @@ module pipeline (
     end
 
     // ================================================================
-    // Load FU state machine
-    // ================================================================
-    always_ff @(posedge clock) begin
-        if (reset) begin
-            load_busy         <= 1'b0;
-            load_dest_tag_reg <= '0;
-            load_addr_reg     <= '0;
-            load_mem_tag      <= 4'b0;
-        end else begin
-            // Clear busy when data arrives (load_done is combinational)
-            if (load_done)
-                load_busy <= 1'b0;
-
-            // Capture memory response tag for our outstanding request
-            if (load_requesting && mem2proc_response != 4'b0)
-                load_mem_tag <= mem2proc_response;
-
-            // Clear tag when done
-            if (load_done)
-                load_mem_tag <= 4'b0;
-
-            // New load issued from RS: capture address (rs1+imm) and dest tag
-            // issue_accept=0 when load_busy, so this won't conflict with load_done
-            if (issue_accept && issue_is_load) begin
-                load_busy         <= 1'b1;
-                load_dest_tag_reg <= rs_issue_dest_tag;
-                load_addr_reg     <= alu_result; // ALU computes rs1 + I_imm
-                load_mem_tag      <= 4'b0;
-            end
-        end
-    end
-
-    // ================================================================
     // ALU (single-cycle, inline)
     // ================================================================
     always_comb begin
@@ -518,9 +657,12 @@ module pipeline (
 
     // ================================================================
     // CDB arbitration:
-    //   Priority 1: MULT (multicycle, blocks ALU)
-    //   Priority 2: LOAD (multicycle, blocks ALU)
-    //   Priority 3: ALU  (single-cycle, blocked by mult_done / load_done)
+    //   Priority 1: MULT (multicycle)
+    //   Priority 2: LSQ load complete (multicycle, blocked by mult_done)
+    //   Priority 3: ALU (single-cycle, blocked by either of the above)
+    //
+    // Stores never go on the CDB; they use the store_done sideband on
+    // the ROB instead.
     // ================================================================
     always_comb begin
         cdb_valid         = 1'b0;
@@ -539,17 +681,21 @@ module pipeline (
                 ALU_MULHSU: cdb_value = mult_product[2*`XLEN-1:`XLEN];
                 default:    cdb_value = mult_product[`XLEN-1:0];
             endcase
-        end else if (load_done) begin
+        end else if (lsq_load_complete_valid) begin
             cdb_valid = 1'b1;
-            cdb_tag   = load_dest_tag_reg;
-            cdb_value = load_result;
-        end else if (issue_accept && !issue_is_mult && !issue_is_load) begin
+            cdb_tag   = lsq_load_complete_tag;
+            cdb_value = lsq_load_complete_value;
+        end else if (issue_accept && !issue_is_mult) begin
             cdb_valid = 1'b1;
             cdb_tag   = rs_issue_dest_tag;
-            if (rs_issue_op[6]) begin          // uncond branch (JAL)
+            if (rs_issue_op[6]) begin          // uncond branch (JAL/JALR)
+                // The ALU computes the target for both JAL (PC + J_imm)
+                // and JALR (rs1 + I_imm).  Clearing bit 0 is a no-op
+                // for JAL and matches the JALR spec.  The return-address
+                // write-back (NPC) is generated by the ROB on commit.
                 cdb_value         = '0;
                 cdb_take_branch   = 1'b1;
-                cdb_branch_target = branch_target_buf;
+                cdb_branch_target = {alu_result[`XLEN-1:1], 1'b0};
             end else if (rs_issue_op[5]) begin // cond branch
                 cdb_value         = '0;
                 cdb_take_branch   = branch_take;
