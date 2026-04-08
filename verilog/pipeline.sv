@@ -88,7 +88,7 @@ module pipeline (
     logic [7:0]       dispatch_op;
 
     // Issue routing
-    logic issue_is_mult, issue_is_branch, issue_accept;
+    logic issue_is_mult, issue_is_branch, issue_is_load, issue_accept;
 
     // Branch buffer
     logic [`XLEN-1:0] branch_target_buf;
@@ -114,6 +114,13 @@ module pipeline (
     logic             cdb_take_branch;
     logic [`XLEN-1:0] cdb_branch_target;
 
+    // Load FU
+    logic             load_busy, load_done, load_requesting;
+    logic [TAG_W-1:0] load_dest_tag_reg;
+    logic [`XLEN-1:0] load_addr_reg;
+    logic [3:0]       load_mem_tag;
+    logic [`XLEN-1:0] load_result;
+
     // Error status latch
     EXCEPTION_CODE error_status_reg;
 
@@ -127,22 +134,34 @@ module pipeline (
     assign stall        = !Icache_valid_out || rs_full || rob_full || branch_pending;
     assign dispatch_fire = !stall;
 
-    assign dispatch_op  = {1'b0, dec_uncond_branch, dec_cond_branch, dec_alu_func};
+    // op[7]=rd_mem, op[6]=uncond_branch, op[5]=cond_branch, op[4:0]=alu_func
+    assign dispatch_op  = {dec_rd_mem, dec_uncond_branch, dec_cond_branch, dec_alu_func};
 
     assign issue_is_mult   = (rs_issue_op[4:0] >= 5'(ALU_MUL)) &&
                              (rs_issue_op[4:0] <= 5'(ALU_MULHU));
     assign issue_is_branch = rs_issue_op[5] | rs_issue_op[6];
+    assign issue_is_load   = rs_issue_op[7];
     assign issue_accept    = rs_issue_valid &&
-                             (issue_is_mult ? !mult_busy : !mult_done);
+                             (issue_is_mult ? !mult_busy :
+                              issue_is_load ? !load_busy :
+                                              !mult_done && !load_done);
 
     assign alu_signed_a = rs_issue_src1_value;
     assign alu_signed_b = rs_issue_src2_value;
     assign br_signed_a  = rs_issue_src1_value;
     assign br_signed_b  = rs_issue_src2_value;
 
-    // Memory bus: no dcache, all to icache
-    assign proc2mem_command = proc2Imem_command;
-    assign proc2mem_addr    = proc2Imem_addr;
+    // Load FU combinational signals
+    assign load_requesting = load_busy && (load_mem_tag == 4'b0);
+    assign load_done       = load_busy && (load_mem_tag != 4'b0) &&
+                             (mem2proc_tag == load_mem_tag);
+    assign load_result     = load_addr_reg[2] ? mem2proc_data[63:32]
+                                              : mem2proc_data[31:0];
+
+    // Memory bus: dcache (load) has priority over icache
+    assign proc2mem_command = load_requesting ? BUS_LOAD           : proc2Imem_command;
+    assign proc2mem_addr    = load_requesting ? {load_addr_reg[`XLEN-1:3], 3'b0}
+                                              : proc2Imem_addr;
     assign proc2mem_data    = '0;
 
     // Pipeline outputs
@@ -171,9 +190,11 @@ module pipeline (
     icache icache_0 (
         .clock              (clock),
         .reset              (reset),
-        .Imem2proc_response (mem2proc_response),
+        // Mask memory response/tag when dcache is using the bus,
+        // so icache doesn't misinterpret dcache's transaction as its own.
+        .Imem2proc_response (load_requesting ? 4'b0 : mem2proc_response),
         .Imem2proc_data     (mem2proc_data),
-        .Imem2proc_tag      (mem2proc_tag),
+        .Imem2proc_tag      (load_done ? 4'b0 : mem2proc_tag),
         .proc2Icache_addr   ({PC_reg[`XLEN-1:3], 3'b0}),
         .proc2Imem_command  (proc2Imem_command),
         .proc2Imem_addr     (proc2Imem_addr),
@@ -431,6 +452,39 @@ module pipeline (
     end
 
     // ================================================================
+    // Load FU state machine
+    // ================================================================
+    always_ff @(posedge clock) begin
+        if (reset) begin
+            load_busy         <= 1'b0;
+            load_dest_tag_reg <= '0;
+            load_addr_reg     <= '0;
+            load_mem_tag      <= 4'b0;
+        end else begin
+            // Clear busy when data arrives (load_done is combinational)
+            if (load_done)
+                load_busy <= 1'b0;
+
+            // Capture memory response tag for our outstanding request
+            if (load_requesting && mem2proc_response != 4'b0)
+                load_mem_tag <= mem2proc_response;
+
+            // Clear tag when done
+            if (load_done)
+                load_mem_tag <= 4'b0;
+
+            // New load issued from RS: capture address (rs1+imm) and dest tag
+            // issue_accept=0 when load_busy, so this won't conflict with load_done
+            if (issue_accept && issue_is_load) begin
+                load_busy         <= 1'b1;
+                load_dest_tag_reg <= rs_issue_dest_tag;
+                load_addr_reg     <= alu_result; // ALU computes rs1 + I_imm
+                load_mem_tag      <= 4'b0;
+            end
+        end
+    end
+
+    // ================================================================
     // ALU (single-cycle, inline)
     // ================================================================
     always_comb begin
@@ -463,7 +517,10 @@ module pipeline (
     end
 
     // ================================================================
-    // CDB arbitration: MULT has priority; ALU blocked when mult_done
+    // CDB arbitration:
+    //   Priority 1: MULT (multicycle, blocks ALU)
+    //   Priority 2: LOAD (multicycle, blocks ALU)
+    //   Priority 3: ALU  (single-cycle, blocked by mult_done / load_done)
     // ================================================================
     always_comb begin
         cdb_valid         = 1'b0;
@@ -476,13 +533,17 @@ module pipeline (
             cdb_valid = 1'b1;
             cdb_tag   = mult_dest_tag_reg;
             case (mult_alu_func_reg)
-                ALU_MUL:    cdb_value = {32'b0, mult_product[`XLEN-1:0]};
-                ALU_MULH:   cdb_value = {32'b0, mult_product[2*`XLEN-1:`XLEN]};
-                ALU_MULHU:  cdb_value = {32'b0, mult_product[2*`XLEN-1:`XLEN]};
-                ALU_MULHSU: cdb_value = {32'b0, mult_product[2*`XLEN-1:`XLEN]};
-                default:    cdb_value = {32'b0, mult_product[`XLEN-1:0]};
+                ALU_MUL:    cdb_value = mult_product[`XLEN-1:0];
+                ALU_MULH:   cdb_value = mult_product[2*`XLEN-1:`XLEN];
+                ALU_MULHU:  cdb_value = mult_product[2*`XLEN-1:`XLEN];
+                ALU_MULHSU: cdb_value = mult_product[2*`XLEN-1:`XLEN];
+                default:    cdb_value = mult_product[`XLEN-1:0];
             endcase
-        end else if (issue_accept && !issue_is_mult) begin
+        end else if (load_done) begin
+            cdb_valid = 1'b1;
+            cdb_tag   = load_dest_tag_reg;
+            cdb_value = load_result;
+        end else if (issue_accept && !issue_is_mult && !issue_is_load) begin
             cdb_valid = 1'b1;
             cdb_tag   = rs_issue_dest_tag;
             if (rs_issue_op[6]) begin          // uncond branch (JAL)
