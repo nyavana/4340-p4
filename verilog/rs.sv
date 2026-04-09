@@ -109,8 +109,8 @@ module rs #(
         for (i = 0; i < RS_SIZE; i++) begin
             if (!issue_found &&
                 entries[i].busy &&
-                src1_ready_eff[i] &&
-                src2_ready_eff[i]) begin
+                src1_ready[i] &&
+                src2_ready[i]) begin
                 issue_found = 1'b1;
                 issue_idx   = i[$clog2(RS_SIZE)-1:0];
             end
