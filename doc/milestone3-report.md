@@ -55,7 +55,6 @@ Full pipeline programs: see `doc/milestone3-results.md` for the per-program tabl
 
 ## What's deferred
 
-- Diagnose and fix the tight-loop hang. Most likely culprit: a missed wake-up between the LSQ head moving forward and the next store asserting `store_ready` to a ROB entry the ROB has just committed.
 - Store-to-load forwarding. The current head-only policy serializes all memory ops. A forwarding path would let independent loads bypass an in-flight store.
 - LSQ flush on branch mispredict. The flush input is wired but not exercised, since branches still stall the front-end and no speculation reaches the LSQ. When early branch resolution lands as an advanced feature, the LSQ flush logic will need to drop in-flight non-committed entries and abandon any in-flight cache requests.
 - Full pipeline synthesis with timing closure.
