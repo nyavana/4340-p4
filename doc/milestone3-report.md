@@ -66,3 +66,17 @@ Among the new passes are five C programs (`basic_malloc`, `fc_forward`, `inserti
 - Store-to-load forwarding. The current head-only policy serializes all memory ops. A forwarding path would let independent loads bypass an in-flight store.
 - LSQ flush on branch mispredict. The flush input is wired but not exercised, since branches still stall the front-end and no speculation reaches the LSQ. When early branch resolution lands as an advanced feature, the LSQ flush logic will need to drop in-flight non-committed entries and abandon any in-flight cache requests.
 - Full pipeline synthesis with timing closure.
+
+## Post-milestone-3: RS issue-selector fix
+
+The "tight loop" hang that took out 15 of the 33 milestone-3 programs turned out not to be in the LSQ at all. It was a combinational loop in the RS issue selector: `issue_found` depended on `src*_ready_eff`, which depended on `cdb_valid`, which depended on `issue_accept`, which depended back on `issue_found`. Whenever a lower-index RS slot was wakeable from the CDB tag of a higher-index slot the ALU was issuing, the selector ping-ponged between them and VCS sat inside a single timestamp forever.
+
+`mult_no_lsq` was the most reproducible victim because its iter-2 mul/add chain produces that exact RS configuration at cycle ≈2192. Most other "tight loop" programs hit it eventually for the same reason. The LSQ wake-up hypothesis from milestone 3 was a wrong guess.
+
+The fix is one block in `verilog/rs.sv`: the issue selector now reads the registered `entries[i].src1_ready` / `src2_ready` instead of the combinational `_eff` versions. The CDB-bypass path is still used on the issued entry's `src_value` output, so correctness is unchanged; the only behavior difference is that an instruction whose dependency arrives on the same cycle's CDB now waits one extra cycle to issue. Standard P6 wakeup-then-select.
+
+Credit for the diagnosis goes to `xh2718` of `CSEE4340-26/p4.GaPiChiXuXu`, whose commit `397ea7d` contains the same comment now sitting above our issue selector. Their commit did several other unrelated things for an earlier-milestone tree; only the `rs.sv` selector change was applicable here.
+
+Full writeup, including the loop diagram, the cycle-2192 trace, the per-program before/after table, and the caveat about what "halts cleanly" does and doesn't verify, is in [doc/rs-issue-loop-fix.md](doc/rs-issue-loop-fix.md).
+
+Commit: `194b97d` on `milestone3` (fast-forward from `2532ed4`).
