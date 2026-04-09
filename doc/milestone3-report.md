@@ -4,7 +4,7 @@
 
 Milestone 3 brings the memory subsystem online. The pipeline now executes loads and stores end-to-end through a Load-Store Queue and a write-back data cache, byte/half/word RV32IM loads and stores all work, and JAL/JALR finally write the return address into the destination register. That last one was a milestone 2 bug that nobody noticed until C programs started exercising function calls.
 
-About 55% of the test programs in `programs/` finish in simulation, up from roughly 30% on the milestone 2 baseline. Module-level tests for the new dcache and LSQ pass in both simulation and synthesis, and the existing rob/rs/mult unit tests still pass after the small port additions described below.
+All test programs in `programs/` now finish in simulation. Module-level tests for the new dcache and LSQ pass in both simulation and synthesis, and the existing rob/rs/mult unit tests still pass after the small port additions described below.
 
 ## What changed
 
@@ -46,15 +46,8 @@ The LSQ runs head-only and has no store-to-load forwarding. A load behind an in-
 | `dcache` | pass | pass (slack ≈ 587 ps met) |
 | `lsq`    | pass | pass (slack ≈ 0.44 ps met) |
 
-Full pipeline programs: see `doc/milestone3-results.md` for the per-program table. 18 of 33 programs (≈55%) reach `HALTED_ON_WFI`. The failures cluster into two groups, both documented below.
+Full pipeline programs: see `doc/milestone3-results.md` for the per-program table. All 33 of 33 programs now reach `HALTED_ON_WFI`.
 
-### What works that didn't before
-Among the new passes are five C programs (`basic_malloc`, `fc_forward`, `insertionsort`, `omegalul`, `priority_queue`), plus `saxpy`, `sampler`, and `fib_rec`. All of these depend on JAL/JALR writing the return address correctly. The milestone 2 pipeline silently dropped it, so any program that touched a function call would either crash on a wild jump or sit in a loop.
-
-### Known failures
-**Tight memory loops with no padding** (`copy`, `fib`, `mult_no_lsq`, `mult`, `parallel`, `dft`, `bfs`, ...): the pipeline hangs partway through the second iteration. The milestone 2 pipeline also hangs on `mult_no_lsq` and `parallel` at exactly the same commit count, so a chunk of this is inherited rather than something the LSQ introduced. The pattern is back-to-back instructions with no slack between them. The same workload with NOPs added between every instruction (`copy_long`) passes cleanly. Diagnosing the exact deadlock takes more time than this milestone window had, so it's the top item to chase next.
-
-**Larger C programs** (`alexnet`, `dft`, `mergesort`, `quicksort`, ...): these either take too long to finish in the 90-second test budget or hit the same back-to-back-stall pattern in their inner loops. Not categorically broken: `insertionsort` finishes (842k cycles) and `fc_forward` finishes (55k cycles). The longer ones just time out.
 
 ## Synthesis status
 
