@@ -127,6 +127,14 @@ module lsq #(
     logic [IDX_W-1:0] next_head, next_tail;
     logic [IDX_W:0]   count, next_count;
 
+    // When a mispredict flushes an in-flight load, the D-cache keeps
+    // servicing its latched request and will eventually assert
+    // dcache_done for data that no LSQ entry owns.  This flag swallows
+    // that one stale response so a later head load is not falsely
+    // latched with somebody else's data.
+    logic             stale_response_pending;
+    logic             next_stale_response_pending;
+
     assign lsq_full = (count == LSQ_SIZE[IDX_W:0]);
 
     // -------------------------------------------------------
@@ -260,6 +268,8 @@ module lsq #(
     // -------------------------------------------------------
     integer i;
     logic [IDX_W:0] dec_count;
+    logic [IDX_W:0] flush_new_count;
+    logic [IDX_W-1:0] flush_scan_idx;
 
     always_comb begin
         for (i = 0; i < LSQ_SIZE; i++)
@@ -267,13 +277,46 @@ module lsq #(
         next_head  = head;
         next_tail  = tail;
         next_count = count;
+        flush_new_count = '0;
+        flush_scan_idx  = head;
+        next_stale_response_pending = stale_response_pending;
 
         if (flush) begin
-            for (i = 0; i < LSQ_SIZE; i++)
-                next_entries[i] = '0;
-            next_head  = '0;
-            next_tail  = '0;
-            next_count = '0;
+            // Remember that a stale D-cache response is in flight if we
+            // just dropped the load that owned it.  A committed store
+            // being preserved across flush does NOT set this flag --
+            // that response still belongs to a valid LSQ entry.
+            if (entries[head].busy && !entries[head].is_store &&
+                entries[head].in_flight)
+                next_stale_response_pending = 1'b1;
+            // On branch mispredict the LSQ must drop every speculative
+            // entry younger than the mispredicting branch, but it MUST
+            // preserve any already-committed store sitting at the head
+            // waiting to drain to the D-cache.  Commits are in order, so
+            // committed stores form a contiguous run starting at head.
+            for (i = 0; i < LSQ_SIZE; i++) begin
+                if (!entries[i].is_store || !entries[i].committed)
+                    next_entries[i] = '0;
+            end
+            // Walk from head forward; the new tail sits at the first slot
+            // whose retained entry is non-busy.  A contiguous-run flag
+            // (instead of `break`) keeps this friendly to all simulators.
+            begin : flush_scan
+                logic still_contig;
+                still_contig = 1'b1;
+                for (i = 0; i < LSQ_SIZE; i++) begin
+                    flush_scan_idx = IDX_W'((head + i) % LSQ_SIZE);
+                    if (still_contig) begin
+                        if (next_entries[flush_scan_idx].busy)
+                            flush_new_count = flush_new_count + 1'b1;
+                        else
+                            still_contig = 1'b0;
+                    end
+                end
+            end
+            next_head  = head;
+            next_tail  = IDX_W'((head + flush_new_count) % LSQ_SIZE);
+            next_count = flush_new_count;
         end else begin
             // 1) CDB wakeup
             for (i = 0; i < LSQ_SIZE; i++) begin
@@ -324,7 +367,10 @@ module lsq #(
             //   - !in_flight && releasable && !done: mark in_flight.
             //
             dec_count = next_count;
-            if (entries[head].busy && head_is_load) begin
+            if (stale_response_pending && dcache_done) begin
+                // Swallow the stale response -- don't let anyone latch it.
+                next_stale_response_pending = 1'b0;
+            end else if (entries[head].busy && head_is_load) begin
                 if (entries[head].load_buf_valid) begin
                     if (load_complete_accept) begin
                         next_entries[head] = '0;
@@ -395,12 +441,14 @@ module lsq #(
             head  <= '0;
             tail  <= '0;
             count <= '0;
+            stale_response_pending <= 1'b0;
         end else begin
             for (j = 0; j < LSQ_SIZE; j++)
                 entries[j] <= next_entries[j];
             head  <= next_head;
             tail  <= next_tail;
             count <= next_count;
+            stale_response_pending <= next_stale_response_pending;
         end
     end
 

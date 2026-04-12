@@ -25,6 +25,10 @@ module rs_test;
   logic [TAG_W-1:0]     dispatch_src2_tag;
   logic [XLEN-1:0]      dispatch_src2_value;
 
+  logic [2:0]           dispatch_branch_funct3;
+  logic [XLEN-1:0]      dispatch_branch_target;
+  logic [XLEN-1:0]      dispatch_branch_NPC;
+
   logic                 rs_full;
 
   // cdb
@@ -39,6 +43,9 @@ module rs_test;
   logic [TAG_W-1:0]     issue_dest_tag;
   logic [XLEN-1:0]      issue_src1_value;
   logic [XLEN-1:0]      issue_src2_value;
+  logic [2:0]           issue_branch_funct3;
+  logic [XLEN-1:0]      issue_branch_target;
+  logic [XLEN-1:0]      issue_branch_NPC;
 
   integer error_count;
   integer test_count;
@@ -60,6 +67,10 @@ module rs_test;
     .dispatch_src2_tag(dispatch_src2_tag),
     .dispatch_src2_value(dispatch_src2_value),
 
+    .dispatch_branch_funct3(dispatch_branch_funct3),
+    .dispatch_branch_target(dispatch_branch_target),
+    .dispatch_branch_NPC   (dispatch_branch_NPC),
+
     .rs_full(rs_full),
 
     .cdb_valid(cdb_valid),
@@ -71,7 +82,10 @@ module rs_test;
     .issue_op(issue_op),
     .issue_dest_tag(issue_dest_tag),
     .issue_src1_value(issue_src1_value),
-    .issue_src2_value(issue_src2_value)
+    .issue_src2_value(issue_src2_value),
+    .issue_branch_funct3(issue_branch_funct3),
+    .issue_branch_target(issue_branch_target),
+    .issue_branch_NPC   (issue_branch_NPC)
   );
 
   // ============================================================
@@ -98,6 +112,10 @@ module rs_test;
       dispatch_src2_ready = 1'b0;
       dispatch_src2_tag   = '0;
       dispatch_src2_value = '0;
+
+      dispatch_branch_funct3 = 3'b0;
+      dispatch_branch_target = '0;
+      dispatch_branch_NPC    = '0;
 
       cdb_valid           = 1'b0;
       cdb_tag             = '0;

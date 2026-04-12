@@ -177,7 +177,7 @@ GREP = grep -E --color=auto
 # - with dependencies: 'rob.simv', 'rob.cov', and 'synth/rob.vg'
 
 # TODO: add more modules here
-TESTED_MODULES = mult rob rs dcache lsq
+TESTED_MODULES = mult rob rs dcache lsq branch_predictor
 
 MODULE = pipeline
 
@@ -205,6 +205,12 @@ $(call DEPS,dcache): $(DCACHE_DEPS)
 
 LSQ_DEPS =
 $(call DEPS,lsq): $(LSQ_DEPS)
+
+# Branch predictor: BTB + bimodal direction predictor.  Standalone module;
+# its unit test stubs the predict / update ports directly and does not need
+# any other SV sources pulled in.
+BRANCH_PREDICTOR_DEPS =
+$(call DEPS,branch_predictor): $(BRANCH_PREDICTOR_DEPS)
 
 # This allows you to use the following make targets:
 # make <module>.pass   <- greps for "@@@ Passed" or "@@@ Incorrect" in the output
@@ -347,6 +353,7 @@ SOURCES = verilog/pipeline.sv \
           verilog/lsq.sv \
           verilog/mult.sv \
           verilog/mult_stage.sv \
+          verilog/branch_predictor.sv \
 
 SYNTH_FILES = synth/pipeline.vg
 

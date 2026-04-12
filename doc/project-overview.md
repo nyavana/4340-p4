@@ -792,54 +792,69 @@ re-synthesizing the full pipeline is slow.
   instructions on the longer C programs (`insertionsort` at 842k cycles,
   `priority_queue` at 79k cycles).
 
+**Recent addition — BTB + bimodal predictor (in progress, milestone 4):**
+
+- `verilog/branch_predictor.sv` now exists: direct-mapped 32-entry BTB
+  plus a 64-entry bimodal (2-bit saturating) direction table. Predict
+  port is combinational at fetch; update port is registered, one per
+  committing branch. Unit test covers cold miss, learning, saturation,
+  flip, tag alias, and write-then-read; all nine scenarios pass in
+  simulation and on the synthesized netlist (100% line/branch
+  coverage on the DUT).
+- `branch_pending` is now tied to zero: the front-end no longer
+  serializes on an in-flight branch. Multiple branches can be in flight.
+  Prediction packet rides with each branch into the ROB entry; at
+  commit the ROB compares predicted vs. actual and asserts
+  `mispredict_valid` on a miss, which drives `flush` on the ROB, RS,
+  and LSQ and redirects `PC_reg` to the correct target.
+- The old shared `branch_target_buf` / `branch_funct3_buf` latches are
+  gone. Each RS entry now carries its own `branch_target`,
+  `branch_funct3`, and `branch_NPC`. The CDB broadcast value for
+  JAL/JALR is the return address (NPC) rather than 0, which is what
+  any downstream CDB-bypass consumer actually needs.
+- The LSQ flush now preserves committed stores at the head (so an
+  architectural store draining into the D-cache is not lost to a later
+  branch's flush) and swallows the dcache response from a flushed
+  in-flight load (so a later head load is not falsely latched with
+  stale data).
+- For the three integration bugs in detail and the open debug plan,
+  see [`branch-predictor-report.md`](branch-predictor-report.md).
+
 **Known broken or missing:**
 
-- About a dozen test programs hang with the same signature: PC sits on the
-  first instruction of the second iteration of an inner loop, the LSQ has a
-  single store at its head with `committed=1` and `in_flight=1`, and
-  `dcache_done` never asserts. This includes `mult_no_lsq` (the original
-  cycle-2192 hang) and `parallel`, both of which already hung at milestone
-  2 — so part of this is inherited rather than caused by the LSQ. The same
-  workload with NOPs added between every instruction (`copy_long`) passes,
-  so the deadlock is a missed wakeup or arbitration corner case rather than
-  a functional bug. Diagnosing it is the top item to chase next.
-- The longer C programs (`alexnet`, `mergesort`, `quicksort`, `dft`, …)
-  either hit the same hang in their inner loops or time out under the
-  90-second test budget.
-- Store-to-load forwarding is not implemented. The LSQ runs head-only, so a
-  load behind a store pays the full miss latency.
-- LSQ flush on branch mispredict is wired but not exercised. It will need
-  to drop in-flight non-committed entries and abandon any in-flight cache
-  requests once early branch resolution lands.
-- There is no branch predictor and no BTB. Branches stall the front-end via
-  `branch_pending` and only redirect the PC at commit, so only one branch
-  can be in flight at a time. The base spec requires a BTB plus a bimodal
-  predictor; this is the next big chunk of work.
-- `BRANCH_PRED_SZ` is still the literal `xx` placeholder.
-- The pipeline is one wide. Fetch, decode, dispatch, issue, and commit are
-  all scalar.
-- Full `synth/pipeline.vg` was not exercised this milestone — the per-module
-  synth runs are the only timing data we have. Per-module slack is positive
-  (`MET`) for everything; the LSQ is the tight one at about 0.4 ps.
+- Two programs still hit the 50M-cycle test harness timeout:
+  `quicksort` and `sort_search`. Both are deeply recursive C
+  workloads with many JALR returns and heavy stack traffic. The
+  other 32 programs halt cleanly; most match or beat their
+  milestone-3 cycle counts. Diagnostics are the top open item. The
+  predictor report has the current hypothesis list.
+- Store-to-load forwarding is not implemented. The LSQ runs head-only,
+  so a load behind a store pays the full miss latency.
+- There is no Return Address Stack for JALR. Every JALR return with a
+  call-site-dependent target still mispredicts against the BTB's
+  last-committed target, paying one flush per return.
+- The pipeline is one wide. Fetch, decode, dispatch, issue, and commit
+  are all scalar.
+- Full `synth/pipeline.vg` has not been re-exercised yet with the new
+  predictor wired in. Per-module synth is positive-slack including the
+  new `branch_predictor`.
 
 ---
 
 ## 9. What is still ahead
 
-The first job is unsticking the tight-loop hang. It now affects roughly a
-dozen programs, all with the same LSQ-head-store-stuck signature, so a fix
-should clear most of the failing tests at once. The most likely culprit is a
-missed wakeup between the LSQ head moving forward and the next store
-asserting `store_ready` to a ROB entry the ROB has just committed in the
-same cycle. The dcache/icache bus arbitration is the secondary suspect, and
-the icache / `mem.sv` boundary that was the original `mult_no_lsq` lead is
-still on the table.
-
-After that, the base spec still needs the branch predictor and BTB, so
-branches no longer serialize the front-end through `branch_pending`. Right
-now only one branch can be in flight at a time, which puts a hard ceiling on
-CPI. Once branches can speculate, the LSQ flush logic that is already wired
-in becomes live for the first time.
+The first job is the two remaining hangs, `quicksort` and `sort_search`.
+Both are recursive C workloads. Three other recursive programs hung
+earlier in the predictor integration (`fib_rec`, `backtrack`, and
+`mergesort`) and were unblocked by three fixes: broadcasting NPC on
+the CDB for JAL/JALR, preserving committed stores across an LSQ
+flush, and swallowing the stale dcache response from a flushed
+in-flight load. `quicksort` and `sort_search` must be hitting a
+different interaction. Current bet: either rapid back-to-back
+mispredicts, or a race between a store's commit and a flush landing
+on the same cycle. The debugging plan lives in
+[`branch-predictor-report.md`](branch-predictor-report.md) and in the
+open OpenSpec change `add-btb-bimodal-predictor`.
 
 From there, the proposal calls for two difficult advanced features. The main
 one is going 2-way superscalar across fetch, dispatch, issue, and commit.

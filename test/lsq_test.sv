@@ -400,6 +400,91 @@ module lsq_test;
         end
     endtask
 
+    task automatic test_flush_clears_queue;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: flush preserves committed store, drops younger entries ===", test_count);
+            // Scenario: head is a committed store waiting on its base
+            // operand (stalled mid-drain); behind it are two uncommitted
+            // entries (a load and a store) that are younger than a
+            // mispredicting branch.  After flush, the committed store
+            // MUST be preserved (its architectural write cannot be lost),
+            // and the younger speculative entries MUST be cleared.  After
+            // the store's base wakes, it drains as if nothing happened.
+            do_reset();
+
+            // Head: a store that we will mark committed but whose base is
+            // pending so it does not fire dcache_store yet.
+            dispatch_valid      = 1'b1;
+            dispatch_is_store   = 1'b1;
+            dispatch_rob_tag    = 3'd0;
+            dispatch_mem_size   = 2'b10;
+            dispatch_is_signed  = 1'b0;
+            dispatch_base_ready = 1'b0;
+            dispatch_base_tag   = 3'd7;
+            dispatch_base_value = '0;
+            dispatch_data_ready = 1'b1;
+            dispatch_data_value = 32'hAAAA_0000;
+            dispatch_imm        = 32'h0;
+            @(posedge clock); #1;
+            dispatch_valid = 1'b0;
+
+            // Fake commit of the head store.
+            rob_commit_valid = 1'b1;
+            rob_commit_tag   = 3'd0;
+            @(posedge clock); #1;
+            rob_commit_valid = 1'b0;
+
+            // Younger entry 1: a load behind the store, base pending.
+            dispatch_valid      = 1'b1;
+            dispatch_is_store   = 1'b0;
+            dispatch_rob_tag    = 3'd1;
+            dispatch_base_ready = 1'b0;
+            dispatch_base_tag   = 3'd7;
+            dispatch_data_ready = 1'b1;
+            dispatch_imm        = 32'h10;
+            @(posedge clock); #1;
+            dispatch_valid = 1'b0;
+
+            // Younger entry 2: another store, operands pending.
+            dispatch_valid      = 1'b1;
+            dispatch_is_store   = 1'b1;
+            dispatch_rob_tag    = 3'd2;
+            dispatch_base_ready = 1'b0;
+            dispatch_base_tag   = 3'd7;
+            dispatch_data_ready = 1'b0;
+            dispatch_data_tag   = 3'd8;
+            dispatch_imm        = 32'h20;
+            @(posedge clock); #1;
+            dispatch_valid = 1'b0;
+
+            // Pulse flush.
+            flush = 1'b1;
+            @(posedge clock); #1;
+            flush = 1'b0;
+
+            // After flush: committed store at head is preserved; younger
+            // entries are gone; no spurious dcache traffic.
+            check_eq("no dcache_load after flush",  dcache_load,  1'b0);
+            check_eq("no dcache_store after flush", dcache_store, 1'b0);
+            check_eq("store_ready off (committed)", store_ready_valid, 1'b0);
+            check_eq("lsq_full clear after flush",  lsq_full, 1'b0);
+
+            // Wake the preserved store's base via CDB; it should then
+            // drain through the stub dcache.
+            do_cdb(3'd7, 32'h300);
+            check_eq("preserved store fires",   dcache_store, 1'b1);
+            check_eq32("preserved store addr",  dcache_addr,  32'h0000_0300);
+
+            idle();
+            // After dcache_done, the store pops and the LSQ is empty.  A
+            // fresh load should fire immediately.
+            dispatch_load_ready(3'd0, 32'h900, 32'h0);
+            check_eq("fresh load fires after drain", dcache_load, 1'b1);
+            idle();
+        end
+    endtask
+
     task automatic test_fifo_order_load_then_store;
         begin
             test_count = test_count + 1;
@@ -444,6 +529,7 @@ module lsq_test;
         test_load_pending_then_cdb();
         test_store_waits_for_commit();
         test_fifo_order_load_then_store();
+        test_flush_clears_queue();
 
         if (error_count == 0)
             $display("\n@@@ Passed");

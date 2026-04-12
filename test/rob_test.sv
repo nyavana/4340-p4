@@ -31,10 +31,14 @@ module rob_test;
   logic                 dispatch_valid;
   logic [4:0]           dispatch_dest_reg;
   logic [XLEN-1:0]      dispatch_NPC;
+  logic [XLEN-1:0]      dispatch_PC;
   logic                 dispatch_halt;
   logic                 dispatch_illegal;
   logic                 dispatch_is_branch;
+  logic                 dispatch_is_uncond_branch;
   logic                 dispatch_is_store;
+  logic                 dispatch_predicted_taken;
+  logic [XLEN-1:0]      dispatch_predicted_target;
 
   logic                 rob_full;
   logic [TAG_W-1:0]     dispatch_tag;
@@ -62,6 +66,10 @@ module rob_test;
   logic                 commit_is_branch;
   logic                 commit_take_branch;
   logic [XLEN-1:0]      commit_branch_target;
+  logic                 commit_is_uncond_branch;
+  logic [XLEN-1:0]      commit_branch_PC;
+  logic                 mispredict_valid;
+  logic [XLEN-1:0]      mispredict_target;
 
   // rat queries
   logic [4:0]           query1_arch_reg;
@@ -87,10 +95,14 @@ module rob_test;
     .dispatch_valid(dispatch_valid),
     .dispatch_dest_reg(dispatch_dest_reg),
     .dispatch_NPC(dispatch_NPC),
+    .dispatch_PC(dispatch_PC),
     .dispatch_halt(dispatch_halt),
     .dispatch_illegal(dispatch_illegal),
     .dispatch_is_branch(dispatch_is_branch),
+    .dispatch_is_uncond_branch(dispatch_is_uncond_branch),
     .dispatch_is_store(dispatch_is_store),
+    .dispatch_predicted_taken(dispatch_predicted_taken),
+    .dispatch_predicted_target(dispatch_predicted_target),
 
     .rob_full(rob_full),
     .dispatch_tag(dispatch_tag),
@@ -115,6 +127,10 @@ module rob_test;
     .commit_is_branch(commit_is_branch),
     .commit_take_branch(commit_take_branch),
     .commit_branch_target(commit_branch_target),
+    .commit_is_uncond_branch(commit_is_uncond_branch),
+    .commit_branch_PC(commit_branch_PC),
+    .mispredict_valid(mispredict_valid),
+    .mispredict_target(mispredict_target),
 
     .query1_arch_reg(query1_arch_reg),
     .query1_pending(query1_pending),
@@ -142,27 +158,31 @@ module rob_test;
   // ============================================================
   task automatic clear_inputs;
     begin
-      flush              = 1'b0;
+      flush                     = 1'b0;
 
-      dispatch_valid     = 1'b0;
-      dispatch_dest_reg  = 5'd0;
-      dispatch_NPC       = '0;
-      dispatch_halt      = 1'b0;
-      dispatch_illegal   = 1'b0;
-      dispatch_is_branch = 1'b0;
-      dispatch_is_store  = 1'b0;
+      dispatch_valid            = 1'b0;
+      dispatch_dest_reg         = 5'd0;
+      dispatch_NPC              = '0;
+      dispatch_PC               = '0;
+      dispatch_halt             = 1'b0;
+      dispatch_illegal          = 1'b0;
+      dispatch_is_branch        = 1'b0;
+      dispatch_is_uncond_branch = 1'b0;
+      dispatch_is_store         = 1'b0;
+      dispatch_predicted_taken  = 1'b0;
+      dispatch_predicted_target = '0;
 
-      cdb_valid          = 1'b0;
-      cdb_tag            = '0;
-      cdb_value          = '0;
-      cdb_take_branch    = 1'b0;
-      cdb_branch_target  = '0;
+      cdb_valid                 = 1'b0;
+      cdb_tag                   = '0;
+      cdb_value                 = '0;
+      cdb_take_branch           = 1'b0;
+      cdb_branch_target         = '0;
 
-      store_done_valid   = 1'b0;
-      store_done_tag     = '0;
+      store_done_valid          = 1'b0;
+      store_done_tag            = '0;
 
-      query1_arch_reg    = 5'd0;
-      query2_arch_reg    = 5'd0;
+      query1_arch_reg           = 5'd0;
+      query2_arch_reg           = 5'd0;
     end
   endtask
 
@@ -203,6 +223,7 @@ module rob_test;
       dispatch_valid     = 1'b1;
       dispatch_dest_reg  = dest;
       dispatch_NPC       = npc;
+      dispatch_PC        = npc - 4;
       dispatch_is_branch = is_branch;
       dispatch_halt      = halt;
       dispatch_illegal   = illegal;
@@ -211,12 +232,16 @@ module rob_test;
 
   task automatic stop_dispatch;
     begin
-      dispatch_valid     = 1'b0;
-      dispatch_dest_reg  = 5'd0;
-      dispatch_NPC       = '0;
-      dispatch_is_branch = 1'b0;
-      dispatch_halt      = 1'b0;
-      dispatch_illegal   = 1'b0;
+      dispatch_valid            = 1'b0;
+      dispatch_dest_reg         = 5'd0;
+      dispatch_NPC              = '0;
+      dispatch_PC               = '0;
+      dispatch_is_branch        = 1'b0;
+      dispatch_is_uncond_branch = 1'b0;
+      dispatch_halt             = 1'b0;
+      dispatch_illegal          = 1'b0;
+      dispatch_predicted_taken  = 1'b0;
+      dispatch_predicted_target = '0;
     end
   endtask
 
@@ -258,6 +283,46 @@ module rob_test;
       @(posedge clock);
       #1;
       stop_dispatch();
+    end
+  endtask
+
+  // Dispatch a branch instruction carrying a prediction over one posedge.
+  task automatic dispatch_branch_pred;
+    input  logic [4:0]      dest;
+    input  logic [XLEN-1:0] pc;
+    input  logic            is_uncond;
+    input  logic            pred_taken;
+    input  logic [XLEN-1:0] pred_target;
+    output logic [TAG_W-1:0] out_tag;
+    begin
+      dispatch_valid            = 1'b1;
+      dispatch_dest_reg         = dest;
+      dispatch_NPC              = pc + 4;
+      dispatch_PC               = pc;
+      dispatch_is_branch        = 1'b1;
+      dispatch_is_uncond_branch = is_uncond;
+      dispatch_halt             = 1'b0;
+      dispatch_illegal          = 1'b0;
+      dispatch_predicted_taken  = pred_taken;
+      dispatch_predicted_target = pred_target;
+      #1;
+      out_tag = dispatch_tag;
+      @(posedge clock);
+      #1;
+      stop_dispatch();
+    end
+  endtask
+
+  // Drive CDB with a branch resolution for one cycle.
+  task automatic complete_cdb_branch;
+    input logic [TAG_W-1:0] tag;
+    input logic             actual_taken;
+    input logic [XLEN-1:0]  actual_target;
+    begin
+      drive_cdb(tag, 32'h0, actual_taken, actual_target);
+      @(posedge clock);
+      #1;
+      stop_cdb();
     end
   endtask
 
@@ -626,6 +691,81 @@ module rob_test;
   endtask
 
   // ============================================================
+  // Branch prediction / mispredict tests
+  // ============================================================
+
+  task automatic test_branch_correct_prediction;
+    logic [TAG_W-1:0] tb;
+    begin
+      test_count = test_count + 1;
+      $display("\n=== Test %0d: correct prediction -> no mispredict ===", test_count);
+      do_reset();
+
+      // Predicted taken, actual taken, target match.
+      dispatch_branch_pred(5'd0, 32'h0000_1000, 1'b0, 1'b1, 32'h0000_2000, tb);
+      complete_cdb_branch(tb, 1'b1, 32'h0000_2000);
+
+      check_equal("no mispredict on correct pred", mispredict_valid, 1'b0);
+      idle_cycle();
+    end
+  endtask
+
+  task automatic test_branch_taken_predicted_not_taken;
+    logic [TAG_W-1:0] tb;
+    begin
+      test_count = test_count + 1;
+      $display("\n=== Test %0d: taken but predicted not-taken ===", test_count);
+      do_reset();
+
+      dispatch_branch_pred(5'd0, 32'h0000_1100, 1'b0, 1'b0, 32'h0, tb);
+      complete_cdb_branch(tb, 1'b1, 32'h0000_1200);
+
+      check_equal("mispredict pulse",            mispredict_valid,  1'b1);
+      check_equal("mispredict_target",           mispredict_target, 32'h0000_1200);
+      check_equal("commit_is_branch",            commit_is_branch,  1'b1);
+
+      idle_cycle();
+      check_equal("mispredict falls after retire", mispredict_valid, 1'b0);
+    end
+  endtask
+
+  task automatic test_branch_not_taken_predicted_taken;
+    logic [TAG_W-1:0] tb;
+    begin
+      test_count = test_count + 1;
+      $display("\n=== Test %0d: not-taken but predicted taken ===", test_count);
+      do_reset();
+
+      // Predicted taken (toward 0x0000_2200), actual not-taken.  Recovery
+      // target should be NPC = PC + 4 = 0x0000_1204.
+      dispatch_branch_pred(5'd0, 32'h0000_1200, 1'b0, 1'b1, 32'h0000_2200, tb);
+      complete_cdb_branch(tb, 1'b0, 32'h0);
+
+      check_equal("mispredict pulse",  mispredict_valid,  1'b1);
+      check_equal("mispredict target = NPC", mispredict_target, 32'h0000_1204);
+
+      idle_cycle();
+    end
+  endtask
+
+  task automatic test_branch_taken_wrong_target;
+    logic [TAG_W-1:0] tb;
+    begin
+      test_count = test_count + 1;
+      $display("\n=== Test %0d: correct direction but wrong target ===", test_count);
+      do_reset();
+
+      // Predicted taken to 0xAAAA; actually taken to 0xBBBB.
+      dispatch_branch_pred(5'd0, 32'h0000_1300, 1'b0, 1'b1, 32'h0000_AAAA, tb);
+      complete_cdb_branch(tb, 1'b1, 32'h0000_BBBB);
+
+      check_equal("mispredict pulse",       mispredict_valid,  1'b1);
+      check_equal("redirect to actual tgt", mispredict_target, 32'h0000_BBBB);
+      idle_cycle();
+    end
+  endtask
+
+  // ============================================================
   // main
   // ============================================================
   initial begin
@@ -645,6 +785,10 @@ module rob_test;
     test_flush_clears_everything();
     test_full_detection();
     test_wraparound();
+    test_branch_correct_prediction();
+    test_branch_taken_predicted_not_taken();
+    test_branch_not_taken_predicted_taken();
+    test_branch_taken_wrong_target();
 
     if (error_count == 0) begin
       $display("\n@@@ Passed");
