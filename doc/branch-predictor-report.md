@@ -224,6 +224,84 @@ a clean run, which means `sort_search` is re-doing the same work
 many times over. The `quicksort`-class deadlock (single in-flight
 load to an unmapped address) has been ruled out by the watchdog.
 
+### What the wb-diff against `SERIALIZE_BRANCHES` shows
+
+With `SERIALIZE_BRANCHES` compiled in (the diagnostic ifdef in
+`verilog/pipeline.sv` that reinstates the milestone-3 front-end
+serialization on in-flight branches), `sort_search` halts cleanly
+at 882,994 cycles / 181,994 committed instructions. Diffing that
+writeback stream against the speculative run shows a perfect
+prefix match for the first 180,628 commits. The very first
+diverging line is at a reload of the saved return address:
+
+```
+PC=0x294  (lw x1, 44(x2))
+  serialized  -> REG[1] = 0x00000284
+  speculative -> REG[1] = 0x00000024
+```
+
+Same `x2` (= 0xfdb0), same instruction bytes, different value
+loaded. Because both traces committed the same 180,628 register
+writes, every architectural register state along the way must
+match — but the WB stream only shows register writes, not memory
+stores. So somewhere in those 180,628 commits, a `sw` that
+writes to `(x2)+44` is committing with different `data_value` in
+the two runs. The speculative path stores `0x024`; the serialized
+path stores `0x284`. When the matching `lw x1, 44(x2)` later
+executes and `ret` jumps, the speculative target is 0x024 — the
+init code — and the program re-runs init in an infinite loop.
+
+Following this up with a per-store trace (`dcache_store &&
+dcache_done` at the pipeline testbench, keyed to a `dbg_pc`
+field added to each LSQ entry) and a per-memory-bus-write trace
+(`proc2mem_command == BUS_STORE`), the bug was localized further.
+
+In the speculative run, after every LSQ store and dcache eviction
+up to cycle ~N is committed correctly to memory, the next LW to
+the same line (same tag, same index, coming back after another
+line had taken the slot in between) returns data that DOES NOT
+match what memory was last written with. Concretely, for the
+first diverging load of `x1` at PC=0x294 the trace shows:
+
+```
+cycle N+0 :  EVICT idx=27 tag=fd data=0x00000284_0000fe10
+             (evicting the dirty line for 0xfdd8)
+cycle N+0 :  MEM_SW addr=0x0000fdd8 data=0x00000284_0000fe10
+             (dcache writes the correct bytes back to memory)
+cycle N+1..k: ...other unrelated memory traffic...
+cycle N+k :  PC=0x294 LW addr=0xfdd8 rd=0x00000024
+             (full dcache_rd_data = 0x00000024_00000000 !!)
+cycle N+k+1: MEM_RESP tag=1 data=0x00000024_00000000
+cycle N+k+2: MEM_RESP tag=1 data=0x00000284_0000fe10
+             (this was the correct response, one cycle too late)
+```
+
+So the dcache's `miss_done` fired on a memory response tag that
+belonged to a DIFFERENT in-flight request and latched its data
+(0x00000024_00000000) as the fill for its own 0xfdd8 miss. The
+correct response for the 0xfdd8 fetch arrived on the very next
+cycle but was dropped — the state machine had already moved on.
+
+That points at either
+
+1. An `mem_tag_reg` collision — the dcache's stored tag happened
+   to equal the tag of a concurrent unrelated fetch (icache or an
+   earlier abandoned dcache miss). Memory tags are reused after a
+   response is delivered, so a stale `mem_tag_reg` that survived
+   one request can silently match the response of a later
+   request that happens to get the same tag.
+2. A missing gate on `miss_done`: `Dmem2proc_tag` is driven from
+   the unmasked `mem2proc_tag`, so the dcache sees tag pulses for
+   EVERY in-flight request and relies entirely on the equality
+   check against its own `mem_tag_reg`. Any path that leaves
+   `mem_tag_reg` non-zero while not currently waiting on that
+   tag is a live mis-fire hazard.
+
+The fix is almost certainly along the same lines as the icache
+fix — register the target of the outstanding fetch and gate
+`miss_done` on it agreeing with the current in-flight request.
+That's the concrete next step.
+
 By contrast, the pre-fix `quicksort` hang was a pipeline deadlock:
 PC stuck at 0x130, single in-flight load to address 0x4fa40 (past
 the 64 KB test memory). That address traced back to an

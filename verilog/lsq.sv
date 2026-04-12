@@ -60,6 +60,7 @@ module lsq #(
     input  logic [XLEN-1:0]   dispatch_data_value,
 
     input  logic [XLEN-1:0]   dispatch_imm, // already sign-extended
+    input  logic [XLEN-1:0]   dispatch_dbg_pc, // debug-only: PC of the memory op
 
     output logic              lsq_full,
 
@@ -118,6 +119,7 @@ module lsq #(
         logic              in_flight;        // request handed to D-cache, waiting on done
         logic              load_buf_valid;   // load: data is buffered, waiting for CDB accept
         logic [XLEN-1:0]   load_buf_value;   // sub-word-extracted load result
+        logic [XLEN-1:0]   dbg_pc;           // debug-only: PC of the memory op (unused in logic)
     } lsq_entry_t;
 
     lsq_entry_t entries      [LSQ_SIZE-1:0];
@@ -438,6 +440,7 @@ module lsq #(
                 next_entries[tail].mem_size   = dispatch_mem_size;
                 next_entries[tail].is_signed  = dispatch_is_signed;
                 next_entries[tail].imm        = dispatch_imm;
+                next_entries[tail].dbg_pc     = dispatch_dbg_pc;
 
                 next_entries[tail].base_ready = dispatch_base_ready;
                 next_entries[tail].base_tag   = dispatch_base_tag;

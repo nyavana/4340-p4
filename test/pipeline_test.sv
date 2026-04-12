@@ -44,6 +44,7 @@ module testbench;
     logic [31:0] clock_count;
     logic [31:0] instr_count;
     int          wb_fileno;
+    int          store_fileno;
     logic [63:0] debug_counter; // counter used for infinite loops, forces termination
 
     logic [1:0]       proc2mem_command;
@@ -263,6 +264,10 @@ module testbench;
         $display("@@  %t  Deasserting System reset......\n@@\n@@", $realtime);
 
         wb_fileno = $fopen(writeback_output_file);
+        // Side-channel store trace for debugging: every cycle the LSQ
+        // hands a store to the D-cache, log (addr, data, be).  Writes
+        // to <writeback_output_file>.stores next to the wb stream.
+        store_fileno = $fopen({writeback_output_file, ".stores"});
 
         // Open the pipeline output file after throwing reset
         // open_pipeline_output_file(pipeline_output_file);
@@ -407,6 +412,61 @@ module testbench;
                     $fdisplay(wb_fileno, "PC=%x, ---", pipeline_commit_NPC - 4);
             end
 
+            // Log every store request the LSQ sends to the D-cache.
+            // The LSQ only drives dcache_store for committed stores,
+            // so this is the architectural memory trace.  `dcache_done`
+            // gates us to the single cycle the store actually drains
+            // so the same store isn't logged twice on a miss.
+            if (core.lsq_0.dcache_store && core.dcache_done) begin
+                logic [7:0]         sw_rob_tag;
+                logic [`XLEN-1:0]   sw_pc;
+                sw_rob_tag = {5'b0, core.lsq_0.entries[core.lsq_0.head].rob_tag};
+                sw_pc      = core.lsq_0.entries[core.lsq_0.head].dbg_pc;
+                $fdisplay(store_fileno, "PC=%x SW addr=%x data=%x be=%x rob=%0d",
+                          sw_pc,
+                          core.lsq_0.dcache_addr,
+                          core.lsq_0.dcache_wr_data,
+                          core.lsq_0.dcache_wr_be,
+                          sw_rob_tag);
+            end
+            // Also log load fills -- any cycle the LSQ latches a
+            // dcache_done for the head load.  Captures the extracted
+            // 32-bit value the load will broadcast on the CDB.
+            if (core.lsq_0.dcache_load && core.dcache_done) begin
+                logic [`XLEN-1:0] ld_pc;
+                ld_pc = core.lsq_0.entries[core.lsq_0.head].dbg_pc;
+                $fdisplay(store_fileno, "PC=%x LW addr=%x rd=%x (full=%x)",
+                          ld_pc,
+                          core.lsq_0.dcache_addr,
+                          core.lsq_0.load_value_extracted,
+                          core.dcache_rd_data);
+            end
+            // Log every dcache eviction: when transitioning from
+            // IDLE with a dirty valid line being replaced.  Captures
+            // the evict address and data heading to memory.
+            if (core.dcache_0.state == 3'd0 /* DC_IDLE */ &&
+                (core.lsq_0.dcache_load || core.lsq_0.dcache_store) &&
+                !core.dcache_0.hit &&
+                core.dcache_0.dcache_data[core.dcache_0.req_index].valid &&
+                core.dcache_0.dcache_data[core.dcache_0.req_index].dirty) begin
+                $fdisplay(store_fileno, "EVICT idx=%0d tag=%x data=%x (req_addr=%x)",
+                          core.dcache_0.req_index,
+                          core.dcache_0.dcache_data[core.dcache_0.req_index].tags,
+                          core.dcache_0.dcache_data[core.dcache_0.req_index].data,
+                          core.lsq_0.dcache_addr);
+            end
+            // Log every memory-bus BUS_STORE: who wrote what to main
+            // memory.  Useful for finding corruption paths that the
+            // per-cache logs miss.
+            if (proc2mem_command == 2'd2 /* BUS_STORE */)
+                $fdisplay(store_fileno, "MEM_SW addr=%x data=%x (drives: dc=%b ic=%b)",
+                          proc2mem_addr, proc2mem_data,
+                          core.dcache_drives, core.icache_drives);
+            // Log every memory response (tag arriving with data).
+            if (mem2proc_tag != 4'b0)
+                $fdisplay(store_fileno, "MEM_RESP tag=%x data=%x",
+                          mem2proc_tag, mem2proc_data);
+
             // deal with any halting conditions
             if(pipeline_error_status != NO_ERROR || debug_counter > 50000000) begin
                 $display("@@@ Unified Memory contents hex on left, decimal on right: ");
@@ -453,6 +513,7 @@ module testbench;
                 show_clk_count;
                 // print_close(); // close the pipe_print output file
                 $fclose(wb_fileno);
+                $fclose(store_fileno);
                 #100 $finish;
             end
             debug_counter <= debug_counter + 1;

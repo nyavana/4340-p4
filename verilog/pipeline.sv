@@ -204,7 +204,7 @@ module pipeline (
     // branch_pending is no longer used - the branch predictor lets fetch
     // run past unresolved branches, and mispredict recovery is handled at
     // commit via the ROB's mispredict sideband.
-    assign stall = !Icache_valid_out || rob_full ||
+    assign stall = !Icache_valid_out || rob_full || branch_pending ||
                    (is_mem_op ? lsq_full : rs_full);
     assign dispatch_fire = !stall;
 
@@ -608,6 +608,7 @@ module pipeline (
         .dispatch_data_value (dispatch_data_value),
 
         .dispatch_imm        (dispatch_imm),
+        .dispatch_dbg_pc     (PC_reg),
 
         .lsq_full            (lsq_full),
 
@@ -677,7 +678,26 @@ module pipeline (
     // shared latches are unused -- they are kept for one commit so a
     // follow-up diff can delete them cleanly.
     // ================================================================
+`ifdef SERIALIZE_BRANCHES
+    // Diagnostic: milestone-3-style branch serialization.  Kept
+    // behind an ifdef so `make simulate_all` keeps using the
+    // speculative path.  Used to capture "golden" writeback streams
+    // for wb-diff root-causing.
+    logic branch_pending_reg;
+    always_ff @(posedge clock) begin
+        if (reset)
+            branch_pending_reg <= 1'b0;
+        else if (mispredict_valid)
+            branch_pending_reg <= 1'b0;
+        else if (rob_commit_valid && rob_commit_is_branch)
+            branch_pending_reg <= 1'b0;
+        else if (dispatch_fire && (dec_cond_branch || dec_uncond_branch))
+            branch_pending_reg <= 1'b1;
+    end
+    assign branch_pending    = branch_pending_reg;
+`else
     assign branch_pending    = 1'b0;
+`endif
     assign branch_target_buf = '0;
     assign branch_funct3_buf = '0;
 
