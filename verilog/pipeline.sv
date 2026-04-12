@@ -330,15 +330,33 @@ module pipeline (
     // Update port: registered, one-per-committing-branch write driven
     // by the ROB's commit-side branch info.
     // ================================================================
+    logic             pred_valid_raw;
+    logic             pred_taken_raw;
+    logic [`XLEN-1:0] pred_target_raw;
+    logic             pred_is_uncond_raw;
+`ifdef DISABLE_PREDICTOR
+    // Diagnostic: kill the predictor output so fetch behaves as
+    // "always predict not-taken".  Used to isolate predictor-induced
+    // bugs from the rest of the front-end.
+    assign pred_valid     = 1'b0;
+    assign pred_taken     = 1'b0;
+    assign pred_target    = '0;
+    assign pred_is_uncond = 1'b0;
+`else
+    assign pred_valid     = pred_valid_raw;
+    assign pred_taken     = pred_taken_raw;
+    assign pred_target    = pred_target_raw;
+    assign pred_is_uncond = pred_is_uncond_raw;
+`endif
     branch_predictor branch_predictor_0 (
         .clock            (clock),
         .reset            (reset),
 
         .predict_PC       (PC_reg),
-        .pred_valid       (pred_valid),
-        .pred_taken       (pred_taken),
-        .pred_target      (pred_target),
-        .pred_is_uncond   (pred_is_uncond),
+        .pred_valid       (pred_valid_raw),
+        .pred_taken       (pred_taken_raw),
+        .pred_target      (pred_target_raw),
+        .pred_is_uncond   (pred_is_uncond_raw),
 
         .update_valid     (rob_commit_valid && rob_commit_is_branch),
         .update_PC        (rob_commit_branch_PC),

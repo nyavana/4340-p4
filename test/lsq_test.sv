@@ -135,11 +135,21 @@ module lsq_test;
     assign load_complete_accept = load_complete_valid;
 
     // ----------------------------------------------------------------
-    // DCache stub: 1-cycle hits.  Read returns the address replicated
-    // into the doubleword.  Stores are silently latched into a single
-    // capture register so the test can inspect them.
+    // DCache stub.  Two modes:
+    //   stub_mode=0 (default): 1-cycle hits -- dcache_done tracks
+    //     dcache_load||dcache_store on the same cycle.
+    //   stub_mode=1: manual -- the test drives `manual_dcache_done`
+    //     directly so we can test flush/done race scenarios.  In this
+    //     mode the stub also honours `manual_stale_done_pulse` which
+    //     fires a done pulse even when the LSQ is not asking, to model
+    //     a real D-cache completing a request whose owner has been
+    //     flushed.
     // ----------------------------------------------------------------
-    assign dcache_done    = dcache_load || dcache_store;
+    logic stub_mode;
+    logic manual_dcache_done;
+    logic manual_stale_done_pulse;
+    assign dcache_done    = stub_mode ? (manual_dcache_done || manual_stale_done_pulse)
+                                      : (dcache_load || dcache_store);
     assign dcache_rd_data = {32'hAA55_AA55, dcache_addr[31:0]};
 
     always @(posedge clock) begin
@@ -187,6 +197,9 @@ module lsq_test;
             cdb_value           = '0;
             rob_commit_valid    = 1'b0;
             rob_commit_tag      = '0;
+            stub_mode              = 1'b0;
+            manual_dcache_done     = 1'b0;
+            manual_stale_done_pulse = 1'b0;
         end
     endtask
 
@@ -516,6 +529,182 @@ module lsq_test;
     endtask
 
     // ----------------------------------------------------------------
+    // 11.3 regression: committed store at head, flush on the same
+    // cycle the D-cache finally asserts dcache_done.
+    //
+    // Two sub-scenarios:
+    //   (a) store was `in_flight=1` (miss path): the flush preserves
+    //       the committed store.  The dcache_done pulse for the miss
+    //       lands on the flush cycle.  The store MUST pop correctly on
+    //       that cycle (or the very next cycle) -- the LSQ must not
+    //       re-issue the store, because the external cache has already
+    //       applied the write.
+    //   (b) store was about to release on a hit (in_flight=0): a
+    //       flush lands on the same cycle dcache_store+dcache_done
+    //       would have popped the entry.  Same requirement: the store
+    //       MUST pop and the LSQ must not send a second store to the
+    //       cache.
+    //
+    // Documented invariant: once `committed=1` and the store has been
+    // physically handed to the D-cache (either in_flight=1 OR a
+    // handshake is in progress), a matching dcache_done MUST pop the
+    // entry regardless of flush.  The current head-only policy says a
+    // committed store on the flush cycle either drained already or is
+    // safely droppable -- this test exists so we notice if the
+    // second option silently regresses.
+    // ----------------------------------------------------------------
+    task automatic test_flush_during_store_miss_done;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: flush + dcache_done on committed in_flight store ===", test_count);
+            do_reset();
+            stub_mode = 1'b1;
+
+            // Dispatch a committed-store ready to drain.  Operands
+            // ready so addr_valid is set at dispatch.
+            dispatch_store_ready(3'd0, 32'h300, 32'h08, 32'hCAFE_BABE);
+
+            // Commit it at the ROB so committed=1 gets latched.
+            do_commit(3'd0);
+
+            // LSQ should now be asserting dcache_store; stub_mode=1 so
+            // done stays low.  This drives the store into in_flight=1
+            // on the next cycle.
+            check_eq("dcache_store asserted", dcache_store, 1'b1);
+            check_eq("dcache_done still low",  dcache_done,  1'b0);
+            @(posedge clock); #1;
+            // Now in_flight=1.  The store sits waiting for done.
+            check_eq("still asking dcache",   dcache_store, 1'b1);
+
+            // Fire flush + manual done on the same cycle.  The LSQ
+            // preserves the committed store across flush, but the
+            // dcache_done pulse is for THIS store and MUST pop it.
+            flush              = 1'b1;
+            manual_dcache_done = 1'b1;
+            @(posedge clock); #1;
+            flush              = 1'b0;
+            manual_dcache_done = 1'b0;
+
+            // After the race: LSQ must be empty.  No second dcache_store
+            // can fire, or we would double-write architectural memory.
+            check_eq("no dcache_store after race", dcache_store, 1'b0);
+            check_eq("no dcache_load after race",  dcache_load,  1'b0);
+            check_eq("lsq_full clear",             lsq_full,     1'b0);
+            if (dut.count !== '0) begin
+                $display("ERROR: lsq.count nonzero after flush+done race: %0d", dut.count);
+                error_count = error_count + 1;
+            end
+
+            stub_mode = 1'b0;
+            idle();
+        end
+    endtask
+
+    task automatic test_flush_during_store_hit;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: flush + same-cycle hit on committed store (in_flight=0) ===", test_count);
+            do_reset();
+            stub_mode = 1'b1;
+
+            dispatch_store_ready(3'd0, 32'h400, 32'h08, 32'hFEED_FACE);
+            do_commit(3'd0);
+
+            // The LSQ is asserting dcache_store and expecting done.  In
+            // this scenario the store has NOT yet been seen as in_flight
+            // -- fire flush + done on the very first release cycle.
+            check_eq("dcache_store asserted pre-race", dcache_store, 1'b1);
+
+            flush              = 1'b1;
+            manual_dcache_done = 1'b1;
+            @(posedge clock); #1;
+            flush              = 1'b0;
+            manual_dcache_done = 1'b0;
+
+            check_eq("no dcache_store after race", dcache_store, 1'b0);
+            check_eq("no dcache_load after race",  dcache_load,  1'b0);
+            if (dut.count !== '0) begin
+                $display("ERROR: lsq.count nonzero after flush+hit race: %0d", dut.count);
+                error_count = error_count + 1;
+            end
+
+            stub_mode = 1'b0;
+            idle();
+        end
+    endtask
+
+    // 11.4 regression: the D-cache keeps servicing an already-flushed
+    // request and asserts dcache_done for nobody.  Today
+    // `stale_response_pending` is a single bit, so a second flush
+    // inside the original miss window can leak a stale response into
+    // the new head entry.  Requirement: either the pending count
+    // saturates and subsequent stale dones are still swallowed, or
+    // the flag is widened to cover every in-flight request at flush
+    // time.  This test exercises the back-to-back case.
+    task automatic test_two_back_to_back_stale_responses;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: two flushes inside miss window, both stale dones swallowed ===", test_count);
+            do_reset();
+            stub_mode = 1'b1;
+
+            // Dispatch a load; let it go in_flight.
+            dispatch_load_ready(3'd0, 32'h500, 32'h00);
+            check_eq("load req fires",       dcache_load,  1'b1);
+            @(posedge clock); #1;
+            // in_flight should now be set.
+            if (!dut.entries[dut.head].in_flight) begin
+                $display("ERROR: load not in_flight before flush");
+                error_count = error_count + 1;
+            end
+
+            // First flush: drops the load but a stale response is
+            // pending from the cache.
+            flush = 1'b1;
+            @(posedge clock); #1;
+            flush = 1'b0;
+
+            // Dispatch another load that will also miss (new head).
+            dispatch_load_ready(3'd1, 32'h600, 32'h00);
+            check_eq("second load fires",    dcache_load,  1'b1);
+            @(posedge clock); #1;
+
+            // Second flush: drops this load too.  Now TWO stale
+            // responses are outstanding in a real cache.
+            flush = 1'b1;
+            @(posedge clock); #1;
+            flush = 1'b0;
+
+            // Fire the first stale done from the cache.
+            manual_stale_done_pulse = 1'b1;
+            @(posedge clock); #1;
+            manual_stale_done_pulse = 1'b0;
+
+            // Now install a new head load that MUST NOT latch the
+            // second stale done.
+            dispatch_load_ready(3'd2, 32'h700, 32'h00);
+            check_eq("fresh load after stales", dcache_load, 1'b1);
+
+            // Fire the second stale done.  If the one-bit flag is the
+            // bug, the fresh load will latch this data.
+            manual_stale_done_pulse = 1'b1;
+            @(posedge clock); #1;
+            manual_stale_done_pulse = 1'b0;
+
+            // The fresh load must still be waiting -- it should not
+            // have been popped or had its buffer latched by the stale
+            // response.
+            if (dut.entries[dut.head].load_buf_valid) begin
+                $display("ERROR: fresh head load latched a stale dcache_done");
+                error_count = error_count + 1;
+            end
+
+            stub_mode = 1'b0;
+            idle();
+        end
+    endtask
+
+    // ----------------------------------------------------------------
     // Main
     // ----------------------------------------------------------------
     initial begin
@@ -530,6 +719,9 @@ module lsq_test;
         test_store_waits_for_commit();
         test_fifo_order_load_then_store();
         test_flush_clears_queue();
+        test_flush_during_store_miss_done();
+        test_flush_during_store_hit();
+        test_two_back_to_back_stale_responses();
 
         if (error_count == 0)
             $display("\n@@@ Passed");

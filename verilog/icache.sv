@@ -86,9 +86,20 @@ module icache (
     logic [3:0] current_mem_tag; // The current memory tag we might be waiting on
     logic miss_outstanding; // Whether a miss has received its response tag to wait on
 
-    wire got_mem_data = (current_mem_tag == Imem2proc_tag) && (current_mem_tag != 0);
-
     wire changed_addr = (current_index != last_index) || (current_tag != last_tag);
+
+    // If the fetch PC just changed (e.g. a commit-time mispredict
+    // redirect), current_index/current_tag point at a DIFFERENT line
+    // than the outstanding request's tag was issued for.  A memory
+    // response that happens to arrive on this same cycle would
+    // otherwise latch the old line's data into the new line's cache
+    // slot -- a silent corruption that survives indefinitely and
+    // shows up later as wrongly-decoded instructions.  Gate on
+    // !changed_addr so any pending response is simply dropped when
+    // the fetch target has moved; current_mem_tag is reset to 0 on
+    // the following cycle's update, which drops the response cleanly.
+    wire got_mem_data = (current_mem_tag == Imem2proc_tag) &&
+                        (current_mem_tag != 0) && !changed_addr;
 
     // Set mem tag to zero if we changed_addr, and keep resetting while there is
     // a miss_outstanding. Then set to zero when we got_mem_data.

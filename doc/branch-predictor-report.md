@@ -86,7 +86,10 @@ would halt.
 
 ## Current regression status
 
-32 of 34 programs in `programs/` halt cleanly at `HALTED_ON_WFI`:
+33 of 34 programs in `programs/` halt cleanly at `HALTED_ON_WFI` after
+phase 11 debugging. `quicksort` went from hung-at-50 M cycles to
+halting at 915,974 cycles (−4.4% vs the 958,030 baseline). Only
+`sort_search` still times out.
 
 | Program            | Baseline cycles | New cycles | Delta            |
 |--------------------|----------------:|-----------:|------------------|
@@ -120,7 +123,7 @@ would halt.
 | outer_product      |       4,848,166 |  4,658,300 | −190 k (−3.9%)   |
 | parallel           |           2,325 |      2,325 | 0                |
 | priority_queue     |          78,572 |     77,911 | −661 (−0.8%)     |
-| **quicksort**      |         958,030 |    **hang** | —               |
+| quicksort          |         958,030 |    915,974 | −42 k (−4.4%)    |
 | sampler            |           6,273 |      6,247 | −26              |
 | saxpy              |           4,599 |      4,519 | −80 (−1.7%)      |
 | **sort_search**    |         883,184 |    **hang** | —               |
@@ -134,80 +137,145 @@ A per-branch prediction-accuracy counter has not been wired up yet;
 this is task 7.5 in the open change and is what the next chunk of
 work should start with once the two hangs are unblocked.
 
-## The two remaining hangs: `quicksort` and `sort_search`
+## Phase 11 debug pass: what was found
 
-Both programs commit work for a while and then hit the 50 M-cycle
-harness cap. Neither shows the earlier "re-enter `main` from PC=0"
-signature that `fib_rec` had before the JAL/JALR CDB fix: `main` is
-entered exactly once in both traces. Neither shows the "every load
-of `x27` reads 0" signature that was the store-loss bug. The three
-bugs already fixed are not in play.
+The `quicksort` hang was diagnosed and fixed in this branch. The
+process and the three actual bugs that the pass shook loose are
+worth recording here because the latter two are also real
+pre-existing LSQ bugs that happen to be easier to spot once a
+hanging symptom flagged them:
 
-What we know about the two stuck programs:
+1. **Hang watchdog** (in `test/pipeline_test.sv`). A 16-entry ring
+   that snapshots `{PC_reg, stall, mispredict_valid, rob_head,
+   rob_count, lsq_head, lsq_count, LSQ-head entry bits,
+   icache_valid / dcache_busy / dcache_done / drive flags}` every
+   1 k cycles and dumps them on harness timeout. This turned a
+   `System halted on unknown error code a` line into an actionable
+   signature: `quicksort` was stuck at PC=0x130 with one in-flight
+   load to address 0x4fa40 (past the 64 KB memory), so the D-cache
+   was waiting forever for a memory response that the test harness
+   refuses to produce. That narrowed the hunt to "why does
+   `quicksort` ever try to load 0x4fa40 architecturally when the
+   milestone-3 baseline never did."
 
-- **`quicksort`**: 315 k committed instructions in 50 M cycles.
-  That is CPI around 158: the pipeline is almost entirely stalled.
-  Commit counts per PC cluster tightly around 18 k per PC in the
-  same basic block, which looks like a loop going nowhere rather
-  than a pipeline that is just slow.
-- **`sort_search`**: 11 M committed instructions in 50 M cycles.
-  CPI around 4.5, which is close to healthy for this core. But
-  the commit count is roughly 10× the baseline's architectural
-  instruction count. So forward progress is real, and the program
-  is re-doing the same work many times over.
+2. **Prediction-accuracy counter** (same file). A pair of 64-bit
+   counters for committed branches and `mispredict_valid` pulses,
+   printed at halt. `quicksort` comes in at 72.9 %, `sort_search`
+   at 76.7 %, against the 72–78 % rule-of-thumb for a 2-bit
+   bimodal on branchy integer workloads. The counter is cheap to
+   read via the same hierarchical references as the watchdog.
 
-Hypotheses to test, in roughly the order I'd test them:
+3. **LSQ fix A: committed store + flush + dcache_done race.**
+   On a mispredict flush the LSQ preserves any committed head
+   store waiting to drain. If the flush fell on the same cycle
+   the D-cache asserted `dcache_done` for that store, the old
+   `else` branch never ran and the store stayed queued. On the
+   next cycle it re-issued `dcache_store` — either double-writing
+   architectural memory on a hit or waiting forever for a second
+   done on a miss. Fix: if the preserved head is a committed
+   store with `dcache_done` this cycle, pop it inside the flush
+   branch so the done counts exactly once. Covered by
+   `test_flush_during_store_miss_done` and
+   `test_flush_during_store_hit` in `test/lsq_test.sv`.
 
-1. **A store on the LSQ head committing on the same cycle as a
-   flush.** The preserve-committed-store logic keeps the entry
-   alive, but the `in_flight` bit timing and the interaction with
-   `dcache_done` on a flush cycle is the kind of edge the unit
-   tests would not catch. Concretely: if a committed store is
-   popping on the flush cycle, does it pop, stay, or double-pop?
-2. **A stale response path that still is not covered.** The LSQ
-   swallows exactly one stale `dcache_done` per flush (the one
-   from an in-flight load). Stores have a symmetric case, and a
-   back-to-back flush pair can queue up two stale responses.
-3. **An RS wakeup dropped on flush whose producer survived.** An
-   RS entry whose source tag points at a still-valid ROB entry
-   (rare, but possible if the RS and ROB flushes land on
-   different cycles).
-4. **JALR target written by a load whose base was woken from a
-   different ROB tag under speculative pressure.** This was the
-   root cause on `fib_rec`. It is nominally fixed, but re-check
-   it on `quicksort`, whose function prologues are more
-   elaborate than `fib_rec`'s.
-5. **Deep recursion starving commit via a full ROB or LSQ.** If
-   the pipeline dispatches eight instructions into the ROB and
-   none of them can commit because head is waiting on an operand
-   whose producer was flushed, the pipeline deadlocks.
+4. **LSQ fix B: back-to-back flushes leaking stale dcache
+   responses.** The single-bit `stale_response_pending` can track
+   exactly one outstanding stale, so two flushes inside the
+   miss window leaked the second stale into the next real head
+   load. Replaced with a saturating `stale_response_count`
+   (`IDX_W+1` bits, so it can hold up to `LSQ_SZ`), incremented
+   per flush that drops an in-flight load and decremented on each
+   swallowed `dcache_done`. The counter is NOT bumped when the
+   flush cycle already carries a `dcache_done` pulse — that
+   response is for the flushed load and is effectively swallowed
+   by the flush branch ignoring it, so bumping would double-count.
+   Covered by `test_two_back_to_back_stale_responses`.
 
-## Debug plan (open)
+5. **Icache fix: mem response latched into the wrong line after a
+   PC change.** This one was the actual `quicksort` blocker.
+   `verilog/icache.sv` computed
+   `got_mem_data = (current_mem_tag == Imem2proc_tag) && (current_mem_tag != 0)`
+   and, on that cycle, wrote `icache_data[current_index] <=
+   Imem2proc_data`. But on a commit-time mispredict redirect,
+   `current_index` / `current_tag` update combinationally at the
+   cycle boundary while `current_mem_tag` is still last cycle's
+   tag. If the memory response for the old fetch happens to
+   arrive on the first cycle after the redirect, the response is
+   silently latched into the NEW PC's cache slot with the NEW PC's
+   tags. Subsequent fetches of that new line return the old
+   line's bytes forever — and the decoder turns those into a
+   completely different instruction, flipping a load into a
+   no-dest variant (e.g. a store or a branch) and corrupting
+   architectural state. Milestone-3 hid this bug because
+   `branch_pending = 1` serialized the front-end and produced
+   far fewer mispredict-driven PC changes. Fix: gate
+   `got_mem_data` on `!changed_addr` so the response is simply
+   dropped when the fetch target has moved; the following cycle's
+   `update_mem_tag` path resets `current_mem_tag` to zero
+   cleanly.
 
-1. Add a small hang detector to `test/pipeline_test.sv`. Every 1 k
-   cycles, snapshot the ROB head tag, LSQ head tag, `PC_reg`,
-   `stall`, and `mispredict_valid` into a ring of the last ~16
-   snapshots. On timeout, dump the ring. Run it on `quicksort` and
-   `sort_search` to see whether the pipeline is genuinely stuck or
-   just slow, and on what.
-2. Instrument the LSQ flush path: `$display` the entries it
-   preserves and the new `head/tail/count` on every flush cycle.
-   Replay `quicksort` for a few hundred k cycles and look for a
-   committed store that gets dropped or preserved wrong.
-3. Write a targeted unit test in `lsq_test.sv` for hypothesis 1:
-   committed store at head mid-drain, flush fires on the same
-   cycle `dcache_done` is asserted. The store must pop exactly
-   once and the LSQ must be empty next cycle.
-4. Count committed branches vs `mispredict_valid` pulses to get a
-   mispredict rate per run. A near-100% mispredict rate on a
-   specific PC points straight at the loop that is degenerating.
-5. If the hang survives all of the above, trim `quicksort` down
-   with smaller input arrays and diff the trace against a run
-   that completes.
+## The remaining hang: `sort_search`
 
-Task 7.5 in the openspec change adds a per-program
-prediction-accuracy counter. Do that first: it makes steps 3 and 4
-much easier to read.
+`sort_search` commits ~10.9 M instructions in 50 M cycles (CPI
+around 4.5, within healthy range for this core), at ~76.7 % branch
+accuracy, so the pipeline is not stuck — the program itself is
+looping. That is roughly 10× the architectural instruction count of
+a clean run, which means `sort_search` is re-doing the same work
+many times over. The `quicksort`-class deadlock (single in-flight
+load to an unmapped address) has been ruled out by the watchdog.
+
+By contrast, the pre-fix `quicksort` hang was a pipeline deadlock:
+PC stuck at 0x130, single in-flight load to address 0x4fa40 (past
+the 64 KB test memory). That address traced back to an
+architectural corruption: PC=0x118 loaded `0xfef8` as an integer
+loop bound when the correct value was in the low single digits.
+The icache-response-during-PC-change bug above corrupted the
+cached bytes of a line, which made the decoder interpret the
+instruction differently, which eventually stored a wrong value
+into the stack slot for `high` and mis-computed a pointer. The
+`diff` of the writeback stream against a serialized-branches
+baseline showed the divergence at a PC=0x1ec load where the
+speculative stream committed with `commit_wr_en=0` (wrong
+`dest_reg`) while the baseline committed with `dest_reg=x15` —
+exact same PC, different decoded `has_dest`, because the fetched
+bytes differed.
+
+Candidate causes to investigate next for `sort_search`:
+
+1. A second icache edge that the `!changed_addr` gate does not
+   cover — for example a cache line filled with partially stale
+   bytes because the outstanding fetch tag was reassigned by the
+   memory model while the icache was not driving.
+2. A dcache response routing issue under sustained back-pressure
+   where the existing arbitration mask on `mem2proc_response`
+   lets the icache and dcache observe inconsistent tags during a
+   2-cycle hand-off.
+3. A data-dependent miscompile-like path where a speculative
+   MULT result feeds into a dispatched dependent store BEFORE the
+   `mult_flushed` poisoning latches, leaving a wrong value in an
+   LSQ entry that later commits.
+
+The fastest way to narrow it down is still the `quicksort` recipe:
+capture a full writeback stream from a `SERIALIZE_BRANCHES`-built
+simv and diff it against the speculative run until the first
+architectural divergence. The cycle and PC of that divergence
+point usually identify the offending subsystem within a few
+minutes of reading.
+
+## Open follow-ups
+
+1. Finish the `sort_search` investigation: capture a
+   `SERIALIZE_BRANCHES` writeback stream and diff against the
+   speculative run to pin the divergence.
+2. Run `make synth/branch_predictor.vg` and `make slack` to
+   confirm synthesis is still green with the icache + LSQ
+   changes (phase 8 of the openspec change).
+3. Record per-program prediction-accuracy numbers into the
+   results table above once `sort_search` is unblocked.
+4. Remove the legacy `branch_pending`, `branch_target_buf`, and
+   `branch_funct3_buf` wires in `verilog/pipeline.sv` — they are
+   tied to zero and carry no logic in the committed regression
+   today.
 
 ## Known limitations (by design, not bugs)
 

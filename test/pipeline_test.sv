@@ -63,6 +63,39 @@ module testbench;
     logic             pipeline_commit_wr_en;
     logic [`XLEN-1:0] pipeline_commit_NPC;
 
+    // Hang watchdog: a ring of the last WATCHDOG_RING_LEN snapshots,
+    // one snapshot every WATCHDOG_PERIOD cycles.  Dumped on timeout
+    // (debug_counter > 50M) so we can tell whether quicksort /
+    // sort_search are genuinely stuck and on what instruction.
+    localparam int WATCHDOG_PERIOD   = 1000;
+    localparam int WATCHDOG_RING_LEN = 16;
+    logic [63:0]      wd_cycle [WATCHDOG_RING_LEN];
+    logic [`XLEN-1:0] wd_pc    [WATCHDOG_RING_LEN];
+    logic             wd_stall [WATCHDOG_RING_LEN];
+    logic             wd_misp  [WATCHDOG_RING_LEN];
+    logic [31:0]      wd_rob_head [WATCHDOG_RING_LEN];
+    logic [31:0]      wd_rob_cnt  [WATCHDOG_RING_LEN];
+    logic [31:0]      wd_lsq_head [WATCHDOG_RING_LEN];
+    logic [31:0]      wd_lsq_cnt  [WATCHDOG_RING_LEN];
+    // Captures enough LSQ-head + cache state to tell whether a
+    // persistent hang is a load waiting on the D-cache, a store stuck
+    // on release, or an I-cache miss being starved by the D-cache.
+    // lsqh_bits: {busy, is_store, committed, in_flight, addr_valid,
+    //             base_ready, load_buf_valid, stale_resp_pending}
+    logic [7:0]       wd_lsqh_bits [WATCHDOG_RING_LEN];
+    logic [`XLEN-1:0] wd_lsqh_addr [WATCHDOG_RING_LEN];
+    // cache_bits: {icache_valid, dcache_busy, dcache_done,
+    //              dcache_drives, icache_drives}
+    logic [4:0]       wd_cache_bits [WATCHDOG_RING_LEN];
+    logic [31:0]      wd_idx;
+    logic [31:0]      wd_nvalid;
+
+    // Prediction-accuracy counters.  `branches_committed` counts every
+    // committing branch; `mispredicts` counts the one-cycle
+    // mispredict_valid pulses from the ROB.  Ratio printed at halt.
+    logic [63:0] branches_committed;
+    logic [63:0] mispredicts;
+
     // logic [`XLEN-1:0] if_NPC_dbg;
     // logic [31:0]      if_inst_dbg;
     // logic             if_valid_dbg;
@@ -249,6 +282,98 @@ module testbench;
         end
     end
 
+    // Prediction-accuracy counters and hang-watchdog snapshot ring.
+    // The ROB's commit-side branch signal and the pipeline's
+    // mispredict_valid are read through hierarchical references so no
+    // extra ports have to be plumbed through the pipeline.
+    always @(posedge clock) begin
+        if (reset) begin
+            branches_committed <= '0;
+            mispredicts        <= '0;
+            wd_idx             <= '0;
+            wd_nvalid          <= '0;
+            for (int k = 0; k < WATCHDOG_RING_LEN; k = k + 1) begin
+                wd_cycle     [k] <= '0;
+                wd_pc        [k] <= '0;
+                wd_stall     [k] <= 1'b0;
+                wd_misp      [k] <= 1'b0;
+                wd_rob_head  [k] <= '0;
+                wd_rob_cnt   [k] <= '0;
+                wd_lsq_head  [k] <= '0;
+                wd_lsq_cnt   [k] <= '0;
+                wd_lsqh_bits [k] <= '0;
+                wd_lsqh_addr [k] <= '0;
+                wd_cache_bits[k] <= '0;
+            end
+        end else begin
+            if (core.rob_commit_valid && core.rob_commit_is_branch)
+                branches_committed <= branches_committed + 1'b1;
+            if (core.mispredict_valid)
+                mispredicts <= mispredicts + 1'b1;
+
+            // Snapshot once every WATCHDOG_PERIOD cycles.
+            if ((clock_count % WATCHDOG_PERIOD) == 0) begin
+                wd_cycle   [wd_idx] <= {32'b0, clock_count};
+                wd_pc      [wd_idx] <= core.PC_reg;
+                wd_stall   [wd_idx] <= core.stall;
+                wd_misp    [wd_idx] <= core.mispredict_valid;
+                wd_rob_head[wd_idx] <= 32'(core.rob_0.head);
+                wd_rob_cnt [wd_idx] <= 32'(core.rob_0.count);
+                wd_lsq_head[wd_idx] <= 32'(core.lsq_0.head);
+                wd_lsq_cnt [wd_idx] <= 32'(core.lsq_0.count);
+                wd_lsqh_bits[wd_idx] <= {
+                    core.lsq_0.entries[core.lsq_0.head].busy,
+                    core.lsq_0.entries[core.lsq_0.head].is_store,
+                    core.lsq_0.entries[core.lsq_0.head].committed,
+                    core.lsq_0.entries[core.lsq_0.head].in_flight,
+                    core.lsq_0.entries[core.lsq_0.head].addr_valid,
+                    core.lsq_0.entries[core.lsq_0.head].base_ready,
+                    core.lsq_0.entries[core.lsq_0.head].load_buf_valid,
+                    (core.lsq_0.stale_response_count != '0)
+                };
+                wd_lsqh_addr[wd_idx] <= core.lsq_0.entries[core.lsq_0.head].addr;
+                wd_cache_bits[wd_idx] <= {
+                    core.Icache_valid_out,
+                    core.dcache_busy,
+                    core.dcache_done,
+                    core.dcache_drives,
+                    core.icache_drives
+                };
+                wd_idx              <= (wd_idx == WATCHDOG_RING_LEN - 1) ? '0 : wd_idx + 1'b1;
+                if (wd_nvalid < WATCHDOG_RING_LEN)
+                    wd_nvalid       <= wd_nvalid + 1'b1;
+            end
+        end
+    end
+
+    // Dumps the watchdog ring in temporal order (oldest first).
+    task dump_watchdog_ring;
+        int start_i;
+        int k;
+        int ring_i;
+        begin
+            $display("@@@");
+            $display("@@@ Watchdog ring (last %0d snapshots, ~every %0d cycles):",
+                     wd_nvalid, WATCHDOG_PERIOD);
+            $display("@@@ cols: cycle PC st mi rH rN lH lN | lsqh[busy,st,cm,ifl,av,br,lbv,srp] addr | icv dcb dcd dcdr icdr");
+            if (wd_nvalid < WATCHDOG_RING_LEN)
+                start_i = 0;
+            else
+                start_i = wd_idx;
+            for (k = 0; k < wd_nvalid; k = k + 1) begin
+                ring_i = (start_i + k) % WATCHDOG_RING_LEN;
+                $display("@@@ %8d %08x  %0d  %0d  %0d %0d  %0d %0d | %08b %08x | %05b",
+                         wd_cycle[ring_i], wd_pc[ring_i],
+                         wd_stall[ring_i], wd_misp[ring_i],
+                         wd_rob_head[ring_i], wd_rob_cnt[ring_i],
+                         wd_lsq_head[ring_i], wd_lsq_cnt[ring_i],
+                         wd_lsqh_bits[ring_i], wd_lsqh_addr[ring_i],
+                         wd_cache_bits[ring_i]);
+            end
+            $display("@@@");
+        end
+    endtask
+
 
     always @(negedge clock) begin
         if(reset) begin
@@ -302,6 +427,29 @@ module testbench;
                             pipeline_error_status);
                 endcase
                 $display("@@@\n@@");
+
+                // Prediction-accuracy summary.  Percentage is printed in
+                // integer basis points (x100) to avoid $itor/$rtoa.  A
+                // run with zero committed branches reports 0/0 so the
+                // line is still machine-parseable.
+                begin
+                    logic [63:0] correct;
+                    logic [63:0] acc_bp;    // basis points = correct * 10000 / total
+                    correct = branches_committed - mispredicts;
+                    if (branches_committed == 0)
+                        acc_bp = 64'd0;
+                    else
+                        acc_bp = (correct * 64'd10000) / branches_committed;
+                    $display("@@@ branch_accuracy: %0d/%0d correct (%0d.%02d%%)",
+                             correct, branches_committed,
+                             acc_bp / 64'd100, acc_bp % 64'd100);
+                end
+
+                // Hang watchdog dump -- useful whenever we bail on the
+                // 50 M-cycle timeout; harmless otherwise.
+                if (debug_counter > 50000000)
+                    dump_watchdog_ring();
+
                 show_clk_count;
                 // print_close(); // close the pipe_print output file
                 $fclose(wb_fileno);
