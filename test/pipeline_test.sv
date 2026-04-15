@@ -290,7 +290,11 @@ module testbench;
     // Prediction-accuracy counters and hang-watchdog snapshot ring.
     // The ROB's commit-side branch signal and the pipeline's
     // mispredict_valid are read through hierarchical references so no
-    // extra ports have to be plumbed through the pipeline.
+    // extra ports have to be plumbed through the pipeline.  These
+    // references do not survive synthesis flattening, so the whole
+    // block is guarded on `SYNTH` -- the watchdog and accuracy counter
+    // are debug-only and are not needed on syn_simv runs.
+`ifndef SYNTH
     always @(posedge clock) begin
         if (reset) begin
             branches_committed <= '0;
@@ -350,6 +354,8 @@ module testbench;
             end
         end
     end
+
+`endif // !SYNTH
 
     // Dumps the watchdog ring in temporal order (oldest first).
     task dump_watchdog_ring;
@@ -417,6 +423,12 @@ module testbench;
             // so this is the architectural memory trace.  `dcache_done`
             // gates us to the single cycle the store actually drains
             // so the same store isn't logged twice on a miss.
+            //
+            // All of the store/load/evict/mem-bus logging below uses
+            // hierarchical references into `core.*` and so cannot be
+            // resolved on a synthesized, flattened netlist.  The whole
+            // block is skipped on syn_simv (debug-only telemetry).
+`ifndef SYNTH
             if (core.lsq_0.dcache_store && core.dcache_done) begin
                 logic [7:0]         sw_rob_tag;
                 logic [`XLEN-1:0]   sw_pc;
@@ -466,6 +478,7 @@ module testbench;
             if (mem2proc_tag != 4'b0)
                 $fdisplay(store_fileno, "MEM_RESP tag=%x data=%x",
                           mem2proc_tag, mem2proc_data);
+`endif // !SYNTH
 
             // deal with any halting conditions
             if(pipeline_error_status != NO_ERROR || debug_counter > 50000000) begin
@@ -491,7 +504,10 @@ module testbench;
                 // Prediction-accuracy summary.  Percentage is printed in
                 // integer basis points (x100) to avoid $itor/$rtoa.  A
                 // run with zero committed branches reports 0/0 so the
-                // line is still machine-parseable.
+                // line is still machine-parseable.  The counters are
+                // only incremented in the non-SYNTH always-block above,
+                // so on syn_simv runs we just skip the summary.
+`ifndef SYNTH
                 begin
                     logic [63:0] correct;
                     logic [63:0] acc_bp;    // basis points = correct * 10000 / total
@@ -509,6 +525,7 @@ module testbench;
                 // 50 M-cycle timeout; harmless otherwise.
                 if (debug_counter > 50000000)
                     dump_watchdog_ring();
+`endif // !SYNTH
 
                 show_clk_count;
                 // print_close(); // close the pipe_print output file

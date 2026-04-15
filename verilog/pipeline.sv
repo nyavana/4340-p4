@@ -628,6 +628,7 @@ module pipeline (
         .dcache_wr_data      (lsq_dcache_wr_data),
         .dcache_wr_be        (lsq_dcache_wr_be),
         .dcache_done         (dcache_done),
+        .dcache_busy         (dcache_busy),
         .dcache_rd_data      (dcache_rd_data),
 
         .load_complete_valid (lsq_load_complete_valid),

@@ -84,6 +84,13 @@ module lsq #(
     output logic [63:0]       dcache_wr_data,
     output logic [7:0]        dcache_wr_be,
     input  logic              dcache_done,
+    input  logic              dcache_busy,    // dcache.proc_busy: 1 while
+                                              // servicing a miss.  Used by
+                                              // the flush path to tell "this
+                                              // load is actively in the
+                                              // cache pipeline" apart from
+                                              // "LSQ asserted dcache_load
+                                              // but the cache was busy".
     input  logic [63:0]       dcache_rd_data,
 
     // ---- Load completion (broadcast on CDB by pipeline.sv) ----
@@ -294,14 +301,27 @@ module lsq #(
             // being preserved across flush does NOT bump the counter --
             // that response still belongs to a valid LSQ entry.
             //
-            // Edge case: if dcache_done is already asserted on the flush
-            // cycle AND the flushed head was an in-flight load, the
-            // response is for that load and has already arrived.  We
-            // ignore it (the else branch never runs on flush cycles),
-            // so the counter should NOT be bumped -- otherwise the
-            // NEXT real response would be swallowed by mistake.
-            if (entries[head].busy && !entries[head].is_store &&
-                entries[head].in_flight && !dcache_done)
+            // Edge case A: if dcache_done is already asserted on the
+            // flush cycle AND the flushed head was an in-flight load,
+            // the response is for that load and has already arrived.
+            // We ignore it (the else branch never runs on flush cycles),
+            // so the counter should NOT be bumped -- otherwise the NEXT
+            // real response would be swallowed by mistake.
+            //
+            // Edge case B: the head is a brand-new releasable load and
+            // the cache is IDLE this cycle.  The cache will accept the
+            // request combinationally (state_IDLE && proc_load && !hit)
+            // and commit to a fetch at the next posedge.  The LSQ has
+            // not yet latched in_flight=1 (that happens next cycle).
+            // When flush hits on this same cycle, the cache is still
+            // going to fetch the dropped load's address -- its eventual
+            // dcache_done is stale and must be swallowed.  Without this
+            // arm, sort_search hung because the orphaned fetch's data
+            // (belonging to the flushed load's address) was latched as
+            // if it were the new head's load result.
+            if (entries[head].busy && !entries[head].is_store && !dcache_done &&
+                (entries[head].in_flight ||
+                 (head_load_releasable && !dcache_busy)))
                 next_stale_response_count = stale_response_count + 1'b1;
             // On branch mispredict the LSQ must drop every speculative
             // entry younger than the mispredicting branch, but it MUST
@@ -412,7 +432,15 @@ module lsq #(
                     next_entries[head].load_buf_valid = 1'b1;
                     next_entries[head].load_buf_value = load_value_extracted;
                     next_entries[head].in_flight      = 1'b0;
-                end else if (head_load_releasable && !entries[head].in_flight) begin
+                end else if (head_load_releasable && !entries[head].in_flight &&
+                             !dcache_busy) begin
+                    // Only latch in_flight when the cache is actually
+                    // IDLE (and therefore accepting our request this
+                    // cycle).  If dcache_busy=1 then the cache is still
+                    // on a previous fetch -- marking in_flight here would
+                    // falsely claim ownership of somebody else's
+                    // outstanding response and, on back-to-back flushes,
+                    // would over-count stale responses in the counter.
                     next_entries[head].in_flight = 1'b1;
                 end
             end else if (entries[head].busy && head_is_store) begin

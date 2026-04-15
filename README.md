@@ -411,3 +411,39 @@ cleanly" does and doesn't verify, is in
 Commit:
 [`194b97d`](https://github.com/nyavana/4340-p4/commit/194b97d)
 on `milestone3` (fast-forward from `2532ed4`).
+
+## Progress: Milestone 4 (branch prediction) — base design complete
+
+Milestone 4 brings up the branch-prediction path: a direct-mapped
+32-entry BTB and a 64-entry bimodal (2-bit saturating) direction
+table, wired into fetch combinationally and updated at commit.
+`branch_pending` is now tied to zero, so multiple branches can be in
+flight at once. Commit-time mispredicts raise a one-cycle
+`mispredict_valid` / `mispredict_target` sideband from the ROB that
+flushes the RS, LSQ, and MULT and redirects the PC.
+
+All 34 programs in `programs/` still halt cleanly at `HALTED_ON_WFI`.
+Branch-heavy benchmarks speed up: `fib_rec` −10.3%, `insertionsort`
+−6.5%, `sort_search` −5.9%, `quicksort` −4.4%, `outer_product` −3.9%,
+`fc_forward` −4.3%. Nothing that passed at milestone 3 regressed.
+
+Four integration bugs showed up during bring-up, all hidden by the
+old front-end serialization. They are written up in full in the
+[branch-predictor report](doc/branch-predictor-report.md):
+
+1. JAL/JALR silent-zero: `verilog/rs.sv` carries `branch_NPC` per
+   entry and the CDB broadcasts it for uncond branches.
+2. LSQ committed store lost on a flush + cache-done race:
+   `verilog/lsq.sv` pops the preserved head store inside the flush
+   branch when its own `dcache_done` lands on the flush cycle.
+3. Stale D-cache response latched by the next head load:
+   `verilog/lsq.sv` tracks `stale_response_count` and swallows
+   the orphaned `dcache_done`. The `sort_search`-class same-cycle
+   accept+flush edge is covered by the additional
+   `head_load_releasable && !dcache_busy` arm.
+4. Icache response latched into the wrong line after a PC change:
+   `verilog/icache.sv` gates `got_mem_data` on `!changed_addr`.
+
+For the module design, full cycle-count table, prediction accuracy
+numbers, and known limitations (no RAS, direct-mapped BTB), see
+[`doc/branch-predictor-report.md`](doc/branch-predictor-report.md).

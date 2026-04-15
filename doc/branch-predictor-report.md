@@ -1,8 +1,10 @@
-# Branch Predictor Report (in progress)
+# Branch Predictor Report
 
-Status as of 2026-04-17: the change is today, the three bugs that
-surfaced during bring-up, and the plan for the two programs that
-still hang.
+Status as of 2026-04-17: the predictor is live, the regression is
+green at 34/34, and bring-up turned up four integration bugs that
+are all fixed in this branch (one in `rs.sv` for the JAL/JALR NPC
+broadcast, two in `lsq.sv` for flush / cache-done races, and one
+in `icache.sv` for a PC change mid-fetch).
 
 ## What is built
 
@@ -86,56 +88,78 @@ would halt.
 
 ## Current regression status
 
-33 of 34 programs in `programs/` halt cleanly at `HALTED_ON_WFI` after
-phase 11 debugging. `quicksort` went from hung-at-50 M cycles to
-halting at 915,974 cycles (−4.4% vs the 958,030 baseline). Only
-`sort_search` still times out.
+All 34 programs in `programs/` halt cleanly at `HALTED_ON_WFI`.
+`quicksort` went from hung at the 50 M-cycle cap to halting at
+916,135 cycles (−4.4% vs the 958,030 baseline). `sort_search` was
+the last holdout; it halts at 830,929 cycles / 181,994 instrs /
+CPI 4.57 / 76.57% branch accuracy, ahead of the 882,994-cycle
+SERIALIZE_BRANCHES baseline.
 
 | Program            | Baseline cycles | New cycles | Delta            |
 |--------------------|----------------:|-----------:|------------------|
-| alexnet            |       9,465,750 |  9,409,839 | −56 k (−0.6%)    |
+| alexnet            |       9,465,750 |  9,409,859 | −56 k (−0.6%)    |
 | backtrack          |         264,002 |    259,127 | −4.9 k (−1.8%)   |
-| basic_malloc       |          50,037 |     49,632 | −405 (−0.8%)     |
+| basic_malloc       |          50,037 |     49,633 | −404 (−0.8%)     |
 | bfs                |         112,494 |    112,055 | −439 (−0.4%)     |
 | btest1             |          17,090 |     17,089 | −1               |
 | btest2             |          27,467 |     27,339 | −128 (−0.5%)     |
 | copy               |           3,701 |      3,701 | 0                |
 | copy_long          |           5,861 |      5,861 | 0                |
-| dft                |       1,708,161 |  1,697,139 | −11 k (−0.6%)    |
+| dft                |       1,708,161 |  1,697,200 | −11 k (−0.6%)    |
 | evens              |           1,178 |      1,172 | −6               |
 | evens_long         |           2,979 |      2,975 | −4               |
 | fc_forward         |          55,381 |     53,010 | −2.4 k (−4.3%)   |
 | fib                |           2,415 |      2,415 | 0                |
 | fib_long           |           6,521 |      6,521 | 0                |
 | fib_rec            |          38,011 |     34,107 | −3.9 k (−10.3%)  |
-| graph              |         461,494 |    457,835 | −3.7 k (−0.8%)   |
+| graph              |         461,494 |    457,876 | −3.6 k (−0.8%)   |
 | haha               |             940 |        940 | 0                |
 | halt               |             106 |        106 | 0                |
 | insertion          |           3,630 |      3,394 | −236 (−6.5%)     |
-| insertionsort      |         842,214 |    787,292 | −55 k (−6.5%)    |
-| matrix_mult_rec    |         726,606 |    720,553 | −6.1 k (−0.8%)   |
-| mergesort          |         303,270 |    303,210 | −60              |
+| insertionsort      |         842,214 |    787,762 | −54 k (−6.5%)    |
+| matrix_mult_rec    |         726,606 |    720,557 | −6.0 k (−0.8%)   |
+| mergesort          |         303,270 |    303,262 | −8               |
 | mult               |           7,558 |      7,558 | 0                |
 | mult_no_lsq        |           2,833 |      2,749 | −84 (−3.0%)      |
 | mytest             |             419 |        419 | 0                |
 | no_hazard          |             731 |        731 | 0                |
 | omegalul           |           3,964 |      3,964 | 0                |
-| outer_product      |       4,848,166 |  4,658,300 | −190 k (−3.9%)   |
+| outer_product      |       4,848,166 |  4,659,248 | −189 k (−3.9%)   |
 | parallel           |           2,325 |      2,325 | 0                |
 | priority_queue     |          78,572 |     77,911 | −661 (−0.8%)     |
-| quicksort          |         958,030 |    915,974 | −42 k (−4.4%)    |
+| quicksort          |         958,030 |    916,135 | −42 k (−4.4%)    |
 | sampler            |           6,273 |      6,247 | −26              |
 | saxpy              |           4,599 |      4,519 | −80 (−1.7%)      |
-| **sort_search**    |         883,184 |    **hang** | —               |
+| sort_search        |         883,184 |    830,929 | −52 k (−5.9%)    |
 
 On the three branch-heavy acceptance programs from the spec scenario:
 `fib_rec` improves by 10.3%, `insertionsort` by 6.5%, and
 `priority_queue` by 0.8%. Nothing regressed among the programs that
 already halted at milestone 3.
 
-A per-branch prediction-accuracy counter has not been wired up yet;
-this is task 7.5 in the open change and is what the next chunk of
-work should start with once the two hangs are unblocked.
+Prediction accuracy is tracked by the instrumentation in
+`test/pipeline_test.sv` and printed at halt as
+`branch_accuracy: correct/total (pct)`. Measured values on the
+programs with a non-trivial branch count:
+
+| Program         | correct / total | accuracy |
+|-----------------|----------------:|---------:|
+| insertionsort   |  23,239 / 29,449 |  78.91%  |
+| sort_search     |  22,696 / 29,638 |  76.57%  |
+| quicksort       |  15,971 / 21,900 |  72.92%  |
+| fib_rec         |   3,043 /  4,643 |  65.53%  |
+| priority_queue  |      72 /    203 |  35.46%  |
+
+The three big sorts land in the 73–79% range a 2-bit bimodal with
+a small direct-mapped BTB usually sees on branchy integer code.
+`fib_rec` drops to 65% because it is mostly JALR returns with
+call-site-dependent targets and no Return Address Stack; every
+switch between recursive frames mispredicts. `priority_queue` has
+only 203 committed branches total, so its counter never really
+warms up and the number is mostly variance. The small benchmarks
+(`fib`, `fib_long`, `saxpy`) sit at 84–86% on a handful of branches
+each; `no_hazard` commits zero branches, so the accuracy field is
+printed as 0/0.
 
 ## Phase 11 debug pass: what was found
 
@@ -214,25 +238,24 @@ hanging symptom flagged them:
    `update_mem_tag` path resets `current_mem_tag` to zero
    cleanly.
 
-## The remaining hang: `sort_search`
+## The `sort_search` fix: LSQ stale-response counting
 
-`sort_search` commits ~10.9 M instructions in 50 M cycles (CPI
-around 4.5, within healthy range for this core), at ~76.7 % branch
-accuracy, so the pipeline is not stuck — the program itself is
-looping. That is roughly 10× the architectural instruction count of
-a clean run, which means `sort_search` is re-doing the same work
-many times over. The `quicksort`-class deadlock (single in-flight
-load to an unmapped address) has been ruled out by the watchdog.
+With the LSQ committed-store and saturating-stale-counter fixes
+plus the icache PC-change fix in place, `sort_search` still timed
+out. It was committing ~10.9 M instructions in 50 M cycles, so the
+program was looping architecturally rather than deadlocking the
+pipeline. The culprit was a same-cycle race between the LSQ's
+flush and the D-cache's accept of a fresh load.
 
-### What the wb-diff against `SERIALIZE_BRANCHES` shows
+### What the wb-diff pointed at
 
-With `SERIALIZE_BRANCHES` compiled in (the diagnostic ifdef in
+Building with `SERIALIZE_BRANCHES` (the diagnostic ifdef in
 `verilog/pipeline.sv` that reinstates the milestone-3 front-end
-serialization on in-flight branches), `sort_search` halts cleanly
+serialization on in-flight branches) halted `sort_search` cleanly
 at 882,994 cycles / 181,994 committed instructions. Diffing that
-writeback stream against the speculative run shows a perfect
-prefix match for the first 180,628 commits. The very first
-diverging line is at a reload of the saved return address:
+writeback stream against the speculative run showed a perfect
+prefix match for the first 180,628 commits, then a divergence at
+a reload of the saved return address:
 
 ```
 PC=0x294  (lw x1, 44(x2))
@@ -240,120 +263,102 @@ PC=0x294  (lw x1, 44(x2))
   speculative -> REG[1] = 0x00000024
 ```
 
-Same `x2` (= 0xfdb0), same instruction bytes, different value
-loaded. Because both traces committed the same 180,628 register
-writes, every architectural register state along the way must
-match — but the WB stream only shows register writes, not memory
-stores. So somewhere in those 180,628 commits, a `sw` that
-writes to `(x2)+44` is committing with different `data_value` in
-the two runs. The speculative path stores `0x024`; the serialized
-path stores `0x284`. When the matching `lw x1, 44(x2)` later
-executes and `ret` jumps, the speculative target is 0x024 — the
-init code — and the program re-runs init in an infinite loop.
+The `0x00000284` is the correct return-address value, pushed onto
+the stack at some earlier `sw`. The `0x00000024` is the low 32
+bits of `0x00000024_00000000`, the bytes that a just-evicted
+D-cache line held at a different address that happens to map to
+the same 64-bit line, right before it was written back to memory.
 
-Following this up with a per-store trace (`dcache_store &&
-dcache_done` at the pipeline testbench, keyed to a `dbg_pc`
-field added to each LSQ entry) and a per-memory-bus-write trace
-(`proc2mem_command == BUS_STORE`), the bug was localized further.
+### Root cause
 
-In the speculative run, after every LSQ store and dcache eviction
-up to cycle ~N is committed correctly to memory, the next LW to
-the same line (same tag, same index, coming back after another
-line had taken the slot in between) returns data that DOES NOT
-match what memory was last written with. Concretely, for the
-first diverging load of `x1` at PC=0x294 the trace shows:
+The pipeline testbench's store / load / mem-bus trace
+(`<wb>.stores`) showed that the wrong fill data arrived on the
+exact `miss_done` cycle where the LSQ's new head load latched it.
+The first hypothesis blamed the D-cache's tag equality check
+against the unmasked `mem2proc_tag`, but the unified-memory tag
+model does not reuse a tag while a response for it is outstanding,
+so that story did not close.
 
-```
-cycle N+0 :  EVICT idx=27 tag=fd data=0x00000284_0000fe10
-             (evicting the dirty line for 0xfdd8)
-cycle N+0 :  MEM_SW addr=0x0000fdd8 data=0x00000284_0000fe10
-             (dcache writes the correct bytes back to memory)
-cycle N+1..k: ...other unrelated memory traffic...
-cycle N+k :  PC=0x294 LW addr=0xfdd8 rd=0x00000024
-             (full dcache_rd_data = 0x00000024_00000000 !!)
-cycle N+k+1: MEM_RESP tag=1 data=0x00000024_00000000
-cycle N+k+2: MEM_RESP tag=1 data=0x00000284_0000fe10
-             (this was the correct response, one cycle too late)
-```
+The actual bug was in the LSQ. On a branch mispredict,
+`verilog/lsq.sv` already tracked "a stale D-cache response is in
+flight" with a counter (`stale_response_count`): on flush, the
+counter incremented if the flushed head was a load with its
+`in_flight` bit set. The flaw is that `entries[head].in_flight`
+is latched one cycle AFTER the LSQ first asserts `dcache_load`.
+A flush that lands on the same cycle the D-cache was IDLE and
+accepting a new head load therefore saw `in_flight=0` and did not
+increment the counter, even though the cache had already committed
+combinationally to fetching the dropped load's address. The
+orphaned fetch later completed, its `proc_done` pulse was observed
+by the new LSQ head (which by then had picked up a different
+load), and the LSQ latched the wrong bytes as if they were the
+new load's result. That cache line was then written into the
+D-cache with the new request's tag/index, corrupting architectural
+memory semantics for every subsequent load that hit that line.
 
-So the dcache's `miss_done` fired on a memory response tag that
-belonged to a DIFFERENT in-flight request and latched its data
-(0x00000024_00000000) as the fill for its own 0xfdd8 miss. The
-correct response for the 0xfdd8 fetch arrived on the very next
-cycle but was dropped — the state machine had already moved on.
+### Fix
 
-That points at either
+`verilog/lsq.sv` now takes a `dcache_busy` input (the D-cache's
+`proc_busy`) and uses it in two places:
 
-1. An `mem_tag_reg` collision — the dcache's stored tag happened
-   to equal the tag of a concurrent unrelated fetch (icache or an
-   earlier abandoned dcache miss). Memory tags are reused after a
-   response is delivered, so a stale `mem_tag_reg` that survived
-   one request can silently match the response of a later
-   request that happens to get the same tag.
-2. A missing gate on `miss_done`: `Dmem2proc_tag` is driven from
-   the unmasked `mem2proc_tag`, so the dcache sees tag pulses for
-   EVERY in-flight request and relies entirely on the equality
-   check against its own `mem_tag_reg`. Any path that leaves
-   `mem_tag_reg` non-zero while not currently waiting on that
-   tag is a live mis-fire hazard.
+1. On flush, the stale-response counter increments for either
+   `entries[head].in_flight` (the original case) or
+   `head_load_releasable && !dcache_busy && !dcache_done`, the
+   "cache is accepting this cycle" case that the original check
+   missed. That arm alone unblocks `sort_search`.
+2. The per-entry `in_flight` bit is now only set when the cache
+   is actually IDLE, i.e. `head_load_releasable &&
+   !entries[head].in_flight && !dcache_busy`. Previously the LSQ
+   marked `in_flight=1` as soon as the head became releasable,
+   even if the cache was still mid-fetch on an earlier request.
+   On back-to-back flushes this caused the stale counter to
+   double-count. No live hang in the real workload today, but a
+   correctness hazard now that the counter is load-bearing.
 
-The fix is almost certainly along the same lines as the icache
-fix — register the target of the outstanding fetch and gate
-`miss_done` on it agreeing with the current in-flight request.
-That's the concrete next step.
+`test/lsq_test.sv` feeds `dcache_busy = 1'b0` into the stub
+(always-ready 1-cycle cache model), preserving the existing tests.
+All LSQ unit tests pass; the full regression sits at 34/34.
 
-By contrast, the pre-fix `quicksort` hang was a pipeline deadlock:
-PC stuck at 0x130, single in-flight load to address 0x4fa40 (past
-the 64 KB test memory). That address traced back to an
-architectural corruption: PC=0x118 loaded `0xfef8` as an integer
-loop bound when the correct value was in the low single digits.
-The icache-response-during-PC-change bug above corrupted the
-cached bytes of a line, which made the decoder interpret the
-instruction differently, which eventually stored a wrong value
-into the stack slot for `high` and mis-computed a pointer. The
-`diff` of the writeback stream against a serialized-branches
-baseline showed the divergence at a PC=0x1ec load where the
-speculative stream committed with `commit_wr_en=0` (wrong
-`dest_reg`) while the baseline committed with `dest_reg=x15` —
-exact same PC, different decoded `has_dest`, because the fetched
-bytes differed.
+### How the earlier phase-11 bugs fit in
 
-Candidate causes to investigate next for `sort_search`:
+For context, three other speculative-execution bugs were fixed
+earlier in phase 11 and are what brought the regression from 32/34
+up to 33/34 before this last LSQ fix.
 
-1. A second icache edge that the `!changed_addr` gate does not
-   cover — for example a cache line filled with partially stale
-   bytes because the outstanding fetch tag was reassigned by the
-   memory model while the icache was not driving.
-2. A dcache response routing issue under sustained back-pressure
-   where the existing arbitration mask on `mem2proc_response`
-   lets the icache and dcache observe inconsistent tags during a
-   2-cycle hand-off.
-3. A data-dependent miscompile-like path where a speculative
-   MULT result feeds into a dispatched dependent store BEFORE the
-   `mult_flushed` poisoning latches, leaving a wrong value in an
-   LSQ entry that later commits.
+- `verilog/icache.sv`: `got_mem_data` now gates on `!changed_addr`,
+  so a memory response for an abandoned (mispredict-redirected)
+  instruction fetch is not latched into the new PC's cache slot.
+  Milestone-3 hid this bug because `branch_pending=1` serialized
+  the front-end and produced far fewer PC redirects. This
+  unblocked `quicksort`.
+- `verilog/lsq.sv`: a committed store at the head that sees
+  `dcache_done` on the flush cycle is now popped inside the flush
+  branch, so the done event counts exactly once. Without the pop,
+  a hit path would double-write and a miss path would lock up
+  waiting for a second done.
+- `verilog/lsq.sv`: the single-bit `stale_response_pending` flag
+  was replaced with a saturating `stale_response_count` (width
+  `IDX_W+1`, so it can hold up to `LSQ_SZ`) to survive two flushes
+  landing inside the same miss window.
 
-The fastest way to narrow it down is still the `quicksort` recipe:
-capture a full writeback stream from a `SERIALIZE_BRANCHES`-built
-simv and diff it against the speculative run until the first
-architectural divergence. The cycle and PC of that divergence
-point usually identify the offending subsystem within a few
-minutes of reading.
+The `sort_search` fix then made the counter bookkeeping accurate
+in the two places it had been off: detection on the
+accept-this-cycle edge, and prevention of double-counting on
+back-to-back flushes.
 
 ## Open follow-ups
 
-1. Finish the `sort_search` investigation: capture a
-   `SERIALIZE_BRANCHES` writeback stream and diff against the
-   speculative run to pin the divergence.
-2. Run `make synth/branch_predictor.vg` and `make slack` to
-   confirm synthesis is still green with the icache + LSQ
-   changes (phase 8 of the openspec change).
-3. Record per-program prediction-accuracy numbers into the
-   results table above once `sort_search` is unblocked.
-4. Remove the legacy `branch_pending`, `branch_target_buf`, and
-   `branch_funct3_buf` wires in `verilog/pipeline.sv` — they are
-   tied to zero and carry no logic in the committed regression
-   today.
+1. Remove the `SERIALIZE_BRANCHES` diagnostic ifdef in
+   `verilog/pipeline.sv` once the regression has soaked. It was
+   useful for bisecting the `sort_search` divergence and has no
+   further role now that the regression is green.
+2. Remove the legacy `branch_pending`, `branch_target_buf`, and
+   `branch_funct3_buf` wires in `verilog/pipeline.sv`. They are
+   tied to zero today and carry no live logic.
+3. Add a Return Address Stack for JALR. The `fib_rec` 65.53%
+   accuracy number is almost entirely JALR return mispredicts
+   against the BTB's single last-committed target per entry;
+   every switch between recursive frames mispredicts.
 
 ## Known limitations (by design, not bugs)
 

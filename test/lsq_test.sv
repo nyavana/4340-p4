@@ -64,6 +64,7 @@ module lsq_test;
     logic [63:0]       dcache_wr_data;
     logic [7:0]        dcache_wr_be;
     logic              dcache_done;
+    logic              dcache_busy;
     logic [63:0]       dcache_rd_data;
 
     // load complete
@@ -123,6 +124,7 @@ module lsq_test;
         .dcache_wr_data      (dcache_wr_data),
         .dcache_wr_be        (dcache_wr_be),
         .dcache_done         (dcache_done),
+        .dcache_busy         (dcache_busy),
         .dcache_rd_data      (dcache_rd_data),
 
         .load_complete_valid (load_complete_valid),
@@ -151,6 +153,13 @@ module lsq_test;
     assign dcache_done    = stub_mode ? (manual_dcache_done || manual_stale_done_pulse)
                                       : (dcache_load || dcache_store);
     assign dcache_rd_data = {32'hAA55_AA55, dcache_addr[31:0]};
+    // Stub cache is modelled as "always ready to accept" -- even in
+    // manual mode the LSQ's in_flight handshaking still relies on
+    // dcache_busy tracking whether a real cache is mid-fetch.  The
+    // existing tests pre-date the dcache_busy port and don't care
+    // about it, so holding it at 0 preserves the old 1-cycle-hit
+    // behaviour.
+    assign dcache_busy    = 1'b0;
 
     always @(posedge clock) begin
         if (reset) begin
