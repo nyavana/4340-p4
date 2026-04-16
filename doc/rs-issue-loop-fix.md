@@ -150,3 +150,31 @@ about a "driven but not read" net. Worth deleting in a follow-up.
 `fix(rs): use registered src_ready in issue select to break combinational loop`
 ([`194b97d`](https://github.com/nyavana/4340-p4/commit/194b97d))
 on `milestone3`. Fast-forward from `2532ed4`.
+
+## Follow-up: test sync (2026-04-17)
+
+`test/rs_test.sv` still encoded the pre-fix behaviour where a CDB
+pulse wakes an entry combinationally into issue. With the
+registered `src*_ready` selector the wake-up takes one cycle to
+latch before the selector fires, so two tests
+(`test_dependency_wakeup_then_issue` and
+`test_same_cycle_cdb_bypass_issue`) produced four false failures
+at the assertion right after `drive_cdb + #1`. The tests now
+insert `@(posedge clock); #1` between the CDB pulse and
+`expect_issue`, which matches the wakeup-then-select semantics in
+`rs.sv`.
+
+Side note: the value-bypass mux on the issue output
+(`rs.sv:159-168`) is structurally dead once the selector requires
+registered ready on both operands. By the time `issue_found` is
+true the entry has `src*_ready=1`, so the bypass condition
+`!entries[issue_idx].src*_ready` is false. The mux can stay as a
+defensive fallback; deleting it is a separate cleanup.
+
+Commit: `update rs_test.sv due to makefile problem` (`d66fcae`),
+which also adds a `mult.pass` / `mult.syn.pass` override so the
+`mult` testbench does not collide with the `mult.mem` program's
+`output/mult.out`. The `TB_ONLY_MODULES` filter in the Makefile
+keeps `mult` out of the generic `output/%.out` testbench rule,
+and the testbench now writes to `output/mult_tb.out`; `make
+mult.out` still runs the `mult.mem` program as before.
