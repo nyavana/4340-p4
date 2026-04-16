@@ -294,7 +294,7 @@ module rs_test;
   task automatic test_dependency_wakeup_then_issue;
     begin
       test_count = test_count + 1;
-      $display("\n=== Test %0d: dependency wakeup then issue ===", test_count);
+      $display("\n=== Test %0d: dependency wakeup then issue (wakeup-then-select) ===", test_count);
 
       do_reset();
 
@@ -315,12 +315,21 @@ module rs_test;
 
       expect_no_issue();
 
+      // The RS selector reads the REGISTERED `entries[i].src1_ready`
+      // (see doc/rs-issue-loop-fix.md), so the CDB wake-up takes one
+      // cycle to latch before the selector can fire.  On the CDB cycle
+      // itself, issue_valid stays 0; on the following cycle it goes
+      // high with the woken-up operand value.
       drive_cdb(3'd5, 32'hAAAA_5555);
       #1;
+      expect_no_issue();
+
+      @(posedge clock);
+      #1;
+      stop_cdb();
       expect_issue(8'h22, 3'd2, 32'hAAAA_5555, 32'h33);
 
       accept_issue_one_cycle();
-      stop_cdb();
       expect_no_issue();
     end
   endtask
@@ -328,7 +337,7 @@ module rs_test;
   task automatic test_same_cycle_cdb_bypass_issue;
     begin
       test_count = test_count + 1;
-      $display("\n=== Test %0d: same-cycle CDB bypass into issue ===", test_count);
+      $display("\n=== Test %0d: CDB value captured on wake, used on next-cycle issue ===", test_count);
 
       do_reset();
 
@@ -349,15 +358,24 @@ module rs_test;
 
       expect_no_issue();
 
-      // This cycle the CDB wakes it up.
-      // issue_valid should become 1 combinationally,
-      // and the issued src1 value should bypass directly from cdb_value.
+      // CDB pulse on this cycle; the entry snoops it and latches
+      // src1_ready=1, src1_value=cdb_value at the next posedge.  The
+      // selector then fires on the following cycle with the latched
+      // value.  Pre-fix, the RS selector also combinationally
+      // bypassed through `src*_ready_eff`, which closed a
+      // combinational loop with the CDB arbiter; that bypass is gone
+      // and the "same-cycle" name in this test now just means "issue
+      // fires as early as the registered wake-up allows".
       drive_cdb(3'd6, 32'hDEAD_BEEF);
       #1;
+      expect_no_issue();
+
+      @(posedge clock);
+      #1;
+      stop_cdb();
       expect_issue(8'h33, 3'd3, 32'hDEAD_BEEF, 32'h44);
 
       accept_issue_one_cycle();
-      stop_cdb();
       expect_no_issue();
     end
   endtask
