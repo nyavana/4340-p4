@@ -24,19 +24,29 @@
 `define N 1
 
 // sizes
-`define ROB_SZ xx
-`define RS_SZ xx
+`define ROB_SZ 8
+`define RS_SZ 8
 `define PHYS_REG_SZ (32 + `ROB_SZ)
 
-// worry about these later
-`define BRANCH_PRED_SZ xx
-`define LSQ_SZ xx
+// Branch predictor sizing.  BTB is direct-mapped with `BTB_ENTRIES`
+// entries indexed by PC[log2(BTB_ENTRIES)+1:2].  BHT is a bimodal table
+// with `BHT_ENTRIES` 2-bit saturating counters indexed the same way.
+// See design.md D2/D3 for the sizing rationale.
+`define BTB_ENTRIES 32
+`define BHT_ENTRIES 64
+
+`define LSQ_SZ 8
+
+// D-cache geometry: 32 lines x 64 bits = 256 bytes, the cap from the project
+// spec. The cache is direct-mapped, write-back, write-allocate; see
+// verilog/dcache.sv for the state machine.
+`define DCACHE_LINES 32
 
 // functional units (you should decide if you want more or fewer types of FUs)
-`define NUM_FU_ALU xx
-`define NUM_FU_MULT xx
-`define NUM_FU_LOAD xx
-`define NUM_FU_STORE xx
+`define NUM_FU_ALU 1
+`define NUM_FU_MULT 1
+`define NUM_FU_LOAD 1
+`define NUM_FU_STORE 1
 
 // number of mult stages (2, 4, or 8)
 `define MULT_STAGES 4
@@ -355,5 +365,18 @@ typedef struct packed {
 /**
  * No WB output packet as it would be more cumbersome than useful
  */
+
+/**
+ * BRANCH_PRED_PACKET:
+ * Prediction result carried from fetch through dispatch into the ROB entry.
+ * `pred_valid` = BTB hit; `pred_taken` already factors in is_uncond OR bimodal[1]
+ * on a hit; `pred_target` is the stored BTB target (only meaningful when taken).
+ */
+typedef struct packed {
+    logic             pred_valid;
+    logic             pred_taken;
+    logic [`XLEN-1:0] pred_target;
+    logic             pred_is_uncond;
+} BRANCH_PRED_PACKET;
 
 `endif // __SYS_DEFS_SVH__

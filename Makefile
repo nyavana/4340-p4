@@ -111,7 +111,7 @@ else
 endif
 
 # the Verilog Compiler command and arguments
-VCS = SW_VCS=2020.12-SP2-1 vcs -CFLAGS "-I /homes/user/fac/tk3070/conda/include" -sverilog +vc -Mupdate -line -full64 -kdb -lca -nc \
+VCS = SW_VCS=2020.12-SP2-1 vcs -CFLAGS "-I /homes/user/fac/tk3070/conda/include" -sverilog +incdir+verilog +vc -Mupdate -line -full64 -kdb -lca -nc \
       -debug_access+all+reverse $(VCS_BAD_WARNINGS) +define+CLOCK_PERIOD=$(CLOCK_PERIOD)ps
 # a SYNTH define is added when compiling for synthesis that can be used in testbenches
 
@@ -126,7 +126,7 @@ VERDI_EXE = $(VERDI_HOME)/bin/verdi
 LIB = $(wildcard /homes/user/fac/tk3070/tmp/synthesis/OpenROAD-flow-scripts/flow/platforms/asap7/work_around_yosys/asap7sc7p5t*.v)
 
 # the CSEE 4824 synthesis script
-TCL_SCRIPT = synth/eecs4340_synth.tcl
+TCL_SCRIPT = synth/csee4824_synth.tcl
 
 # Set the shell's pipefail option: causes return values through pipes to match the last non-zero value
 # (useful for, i.e. piping to `tee`)
@@ -177,7 +177,7 @@ GREP = grep -E --color=auto
 # - with dependencies: 'rob.simv', 'rob.cov', and 'synth/rob.vg'
 
 # TODO: add more modules here
-TESTED_MODULES = mult rob
+TESTED_MODULES = mult rob rs dcache lsq branch_predictor
 
 MODULE = pipeline
 
@@ -192,6 +192,25 @@ $(call DEPS,mult): $(MULT_DEPS)
 # No dependencies for the rob (TODO: add any you create)
 ROB_DEPS =
 $(call DEPS,rob): $(ROB_DEPS)
+
+RS_DEPS =
+$(call DEPS,rs): $(RS_DEPS)
+
+# Milestone 3: D-cache and LSQ. dcache is standalone; lsq's testbench
+# uses a small standalone stub for the dcache and does not pull in the
+# real dcache.sv (the LSQ-cache integration is exercised end-to-end by
+# the full pipeline).
+DCACHE_DEPS =
+$(call DEPS,dcache): $(DCACHE_DEPS)
+
+LSQ_DEPS =
+$(call DEPS,lsq): $(LSQ_DEPS)
+
+# Branch predictor: BTB + bimodal direction predictor.  Standalone module;
+# its unit test stubs the predict / update ports directly and does not need
+# any other SV sources pulled in.
+BRANCH_PREDICTOR_DEPS =
+$(call DEPS,branch_predictor): $(BRANCH_PREDICTOR_DEPS)
 
 # This allows you to use the following make targets:
 # make <module>.pass   <- greps for "@@@ Passed" or "@@@ Incorrect" in the output
@@ -222,8 +241,27 @@ $(call DEPS,rob): $(ROB_DEPS)
 # ---- Running ---- #
 
 # run compiled executables ('make %.out' is linked to 'make output/%.out' further below)
-# using this syntax avoids overlapping with the 'make <my_program>.out' targets
-$(TESTED_MODULES:%=output/%.out) $(TESTED_MODULES:%=output/%.syn.out): output/%.out: %.simv | output
+# using this syntax avoids overlapping with the 'make <my_program>.out' targets.
+#
+# `mult` is excluded from this generic rule because the project also
+# ships a `mult.mem` program, and its `output/mult.out` recipe (defined
+# further below) would otherwise collide with the testbench recipe
+# here.  The `mult` testbench instead writes to `output/mult_tb.out`
+# via the explicit rule below and is grep'd by the `mult.pass` /
+# `mult.syn.pass` overrides.
+TB_ONLY_MODULES = $(filter-out mult,$(TESTED_MODULES))
+$(TB_ONLY_MODULES:%=output/%.out) $(TB_ONLY_MODULES:%=output/%.syn.out): output/%.out: %.simv | output
+	@$(call PRINT_COLOR, 5, running $<)
+	./$< | tee $@
+	@$(call PRINT_COLOR, 2, output is in $@)
+
+# mult testbench outputs, kept on a distinct path to avoid clashing
+# with the `mult.mem` program's `output/mult.out`.
+output/mult_tb.out: mult.simv | output
+	@$(call PRINT_COLOR, 5, running $<)
+	./$< | tee $@
+	@$(call PRINT_COLOR, 2, output is in $@)
+output/mult_tb.syn.out: mult.syn.simv | output
 	@$(call PRINT_COLOR, 5, running $<)
 	./$< | tee $@
 	@$(call PRINT_COLOR, 2, output is in $@)
@@ -233,6 +271,17 @@ $(TESTED_MODULES:%=output/%.out) $(TESTED_MODULES:%=output/%.syn.out): output/%.
 	@GREP_COLOR="01;31" $(GREP) -i '@@@ ?Incorrect' $< || \
 	GREP_COLOR="01;32" $(GREP) -i '@@@ ?Passed' $<
 .PHONY: %.pass
+
+# Explicit .pass overrides for the mult testbench (see `TB_ONLY_MODULES`
+# above).  `make mult.out` still runs the program; `make mult.pass`
+# runs the testbench.
+mult.pass: output/mult_tb.out
+	@GREP_COLOR="01;31" $(GREP) -i '@@@ ?Incorrect' $< || \
+	GREP_COLOR="01;32" $(GREP) -i '@@@ ?Passed' $<
+mult.syn.pass: output/mult_tb.syn.out
+	@GREP_COLOR="01;31" $(GREP) -i '@@@ ?Incorrect' $< || \
+	GREP_COLOR="01;32" $(GREP) -i '@@@ ?Passed' $<
+.PHONY: mult.pass mult.syn.pass
 
 # run many types of things in verdi
 %.verdi: %.simv
@@ -325,10 +374,16 @@ TESTBENCH = test/pipeline_test.sv \
 
 # you could simplify this line with $(wildcard verilog/*.sv) - but the manual way is more explicit
 SOURCES = verilog/pipeline.sv \
+          verilog/decoder.sv \
+          verilog/rob.sv \
+          verilog/rs.sv \
           verilog/regfile.sv \
           verilog/icache.sv \
+          verilog/dcache.sv \
+          verilog/lsq.sv \
           verilog/mult.sv \
           verilog/mult_stage.sv \
+          verilog/branch_predictor.sv \
 
 SYNTH_FILES = synth/pipeline.vg
 
