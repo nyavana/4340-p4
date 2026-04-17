@@ -661,11 +661,16 @@ module lsq_test;
             dispatch_load_ready(3'd0, 32'h500, 32'h00);
             check_eq("load req fires",       dcache_load,  1'b1);
             @(posedge clock); #1;
-            // in_flight should now be set.
+            // in_flight should now be set.  XMR probe into the DUT
+            // internals does not survive synthesis flattening, so it
+            // is guarded for sim-only builds.  The externally-visible
+            // checks above/below still run on syn_simv.
+`ifndef SYNTH
             if (!dut.entries[dut.head].in_flight) begin
                 $display("ERROR: load not in_flight before flush");
                 error_count = error_count + 1;
             end
+`endif
 
             // First flush: drops the load but a stale response is
             // pending from the cache.
@@ -702,11 +707,13 @@ module lsq_test;
 
             // The fresh load must still be waiting -- it should not
             // have been popped or had its buffer latched by the stale
-            // response.
+            // response.  XMR probe is sim-only.
+`ifndef SYNTH
             if (dut.entries[dut.head].load_buf_valid) begin
                 $display("ERROR: fresh head load latched a stale dcache_done");
                 error_count = error_count + 1;
             end
+`endif
 
             stub_mode = 1'b0;
             idle();

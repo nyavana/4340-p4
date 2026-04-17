@@ -829,6 +829,26 @@ re-synthesizing the full pipeline is slow.
   the full cycle-count table, see
   [`branch-predictor-report.md`](branch-predictor-report.md).
 
+**Base-design sign-off (milestone 4):**
+
+- The base design is signed off. Evidence is in
+  [`doc/base-design-verification.md`](base-design-verification.md):
+  per-module sim+synth pass matrix with coverage, a 34-program
+  regression table, full-pipeline synth slack, and the list of
+  intentionally deferred proposal items. Headline: on all 34 programs
+  the `.wb` stream on `milestone4` is byte-identical to the same
+  commit rebuilt with `+define+SERIALIZE_BRANCHES` — the diagnostic
+  ifdef that reinstates milestone-3 front-end serialization — so the
+  branch predictor does not introduce any architectural divergence.
+- Full-pipeline synthesis (`synth/pipeline.vg`) is built and
+  reported. Worst slack is **−309.07 ps** at the 1000 ps clock on the
+  `rs_0/entries_reg[3][src1_ready] → mult_0/mstage[0]/product_sum_reg[*]`
+  combinational operand path. Three endpoints violate, all on the
+  same RS→MULT stage-0 class; everything else meets with ≥+330 ps
+  slack. Retune (either a pipeline flop between RS issue and MULT
+  stage 0, or a larger `CLOCK_PERIOD`) is a deliberate follow-up,
+  not a silent period bump.
+
 **Known broken or missing:**
 
 - Store-to-load forwarding is not implemented. The LSQ runs head-only,
@@ -838,10 +858,9 @@ re-synthesizing the full pipeline is slow.
   last-committed target, paying one flush per return.
 - The pipeline is one wide. Fetch, decode, dispatch, issue, and commit
   are all scalar.
-- Per-module synth is positive-slack including `branch_predictor`;
-  LSQ slack is tight (≈0.15 ps with the new `dcache_busy` port).
-  Full `synth/pipeline.vg` with every new module wired in still needs
-  a timing-closure pass.
+- `synth/pipeline.vg` timing at 1000 ps clock is **not closed** (see
+  above). Per-module synth is green but does not imply full-pipeline
+  closure; the RS→MULT cross-module path is the one that needs work.
 
 ---
 
@@ -864,8 +883,9 @@ broadcast is the primary path to that target.
 Beyond the difficult features, the proposal lists several simpler ones we
 want to pick up: a more sophisticated branch predictor, store-to-load
 forwarding in the LSQ, instruction or data prefetching, and set-associative
-caches. Full `synth/pipeline.vg` synthesis with timing closure also still
-needs to happen — only per-module synth has been exercised so far.
+caches. The full `synth/pipeline.vg` netlist has been built and reported
+(see `doc/base-design-verification.md` §4); what remains is timing closure
+on the RS→MULT stage-0 critical path, which is its own follow-up change.
 
 ---
 
