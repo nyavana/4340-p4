@@ -180,8 +180,73 @@ every instruction (`copy_long`) passes cleanly, so the deadlock is timing-
 or wakeup-related rather than functional. Diagnosing it is the top item to
 chase next.
 
-The current canonical state of the project is the `milestone3` branch in
-`4340-p4-milestone3/`.
+### 3.6 Week 6: Milestone 4 — branch predictor, speculation, base-design sign-off
+
+Week 6 closed the base design. Two pieces had to land together: a branch
+predictor to redirect the front-end on predicted-taken hits without waiting
+for commit, and a recovery path to undo the speculation when the prediction
+turned out wrong.
+
+The new module is `verilog/branch_predictor.sv`: a 32-entry direct-mapped BTB
+indexed by `PC[6:2]` with a `PC[31:7]` tag, paired with a 64-entry bimodal
+direction table of 2-bit saturating counters (reset to weakly-not-taken `01`).
+The predict port is combinational on the fetch PC and returns
+`{pred_valid, pred_taken, pred_target, pred_is_uncond}`. The update port is
+registered and fires once per committing branch, driven out of the ROB. Unit
+test covers cold miss, learning, saturation, flip, tag alias, and
+write-then-read — nine scenarios, 100% line and branch coverage on the DUT,
+green in both simulation and synthesis.
+
+The integration removed the front-end serialization that had been in place
+since milestone 2. `branch_pending` is now tied to zero; the predictor
+redirects fetch on a predicted-taken hit, and multiple branches can be in
+flight at once. The ROB does the mispredict check at commit: it carries
+`predicted_taken`, `predicted_target`, `is_uncond_branch`, and `branch_PC` per
+entry, and raises a one-cycle `mispredict_valid` / `mispredict_target` sideband
+when prediction and outcome disagree. That sideband drives `flush` on the RS,
+LSQ, and in-flight MULT and redirects `PC_reg`.
+
+Removing `branch_pending` shook loose four latent bugs that the serialization
+had been hiding:
+
+- JAL/JALR were broadcasting `0` on the CDB as the "link value", with the real
+  return address patched in only at commit. Same-cycle RAT-query and
+  LSQ-wakeup consumers saw the zero and silently wrote it through. Fix: each
+  RS entry now carries its own `branch_NPC`, and the CDB broadcasts that
+  instead. The ROB commit-time override of `entries[head].NPC` is still
+  required and still present.
+- The LSQ flush had to preserve a committed store mid-handshake with the
+  D-cache (a store the architecture has already released cannot be dropped),
+  and had to swallow the D-cache response belonging to a flushed in-flight
+  load. A 1-bit `stale_response_pending` handles the latter.
+- In-flight MULT had to be poisoned across a flush so its eventual CDB
+  broadcast could not clobber a re-allocated ROB slot.
+- The icache had to tolerate PC changes mid-miss; an abandon path already
+  existed for that case but had not been exercised until speculation was live.
+
+Separately, a combinational loop through the RS issue selector
+(`issue_found` → `src*_ready_eff` → `cdb_valid` → `issue_accept` → `issue_found`)
+was root-caused and fixed. The selector now reads the registered
+`entries[i].src*_ready`, not the combinational `_eff`. That fix alone unblocked
+the `mult_no_lsq` cycle-2192 hang and roughly a dozen other tight-loop
+programs from milestone 3. Writeup in
+[`rs-issue-loop-fix.md`](rs-issue-loop-fix.md); the branch-predictor bring-up
+and its four integration bugs are in
+[`branch-predictor-report.md`](branch-predictor-report.md).
+
+All 34 programs in `programs/` now halt cleanly at `HALTED_ON_WFI`. Using
+`+define+SERIALIZE_BRANCHES` — a diagnostic ifdef in `pipeline.sv` that
+reinstates milestone-3 front-end serialization — as the reference, every `.wb`
+stream on `milestone4` is byte-identical to the same commit rebuilt with
+serialization on. Zero architectural divergence from speculation.
+Branch-heavy benchmarks speed up measurably: `fib_rec` −10.5%,
+`insertionsort` −6.4%, `insertion` −6.5%, `sort_search` −5.9%,
+`fc_forward` −4.3%, `outer_product` −3.8%, `quicksort` −3.5%. Nothing
+regresses. Full evidence in
+[`base-design-verification.md`](base-design-verification.md).
+
+The current canonical state of the project is the `milestone4` branch in
+`4340-p4-milestone4/`.
 
 ---
 
@@ -195,9 +260,13 @@ Walk through it the way an instruction does.
 
 **1. Fetch.** `PC_reg` drives the icache. The icache returns a 64-bit line, and
 the pipeline picks the high or low half based on `PC_reg[2]`. The fetch stalls
-when any of the following is true: the icache is not ready, the RS is full, the
-ROB is full, or there is a branch already in flight (`branch_pending`). See
-`pipeline.sv:131-185`.
+when any of the following is true: the icache is not ready, the RS is full, or
+the ROB is full. The `branch_pending` serialization that milestone 2 and 3
+used is gone — `branch_pending` is tied to zero. In its place, the branch
+predictor runs combinationally on the fetch PC: on a predicted-taken hit the
+predictor redirects fetch the same cycle, and the prediction packet
+(`BRANCH_PRED_PACKET`) rides through decode into the instruction's ROB
+entry so the commit stage can check it later.
 
 **2. Decode.** The fetched word goes into `decoder.sv`, which produces operand
 selects, the ALU function, and a handful of flags (`rd_mem`, `cond_branch`,
@@ -223,10 +292,11 @@ Constant operands (PC, NPC, immediates) bypass the RAT entirely. See
 **4. Dispatch.** A single dispatch fires both ROB allocation and RS allocation in
 the same cycle. The ROB hands back `dispatch_tag` (= current tail), which becomes
 the renamed destination tag for the instruction. The RAT is updated in the same
-cycle (except for `x0`, which is never tracked). At the same time, if this is a
-branch, the pipeline latches its target and `funct3` into `branch_target_buf` /
-`branch_funct3_buf` and asserts `branch_pending`, which stalls the front-end
-until the branch commits. See `pipeline.sv:304-402`.
+cycle (except for `x0`, which is never tracked). Branch metadata — the
+dispatch-time target, `funct3`, and NPC — rides into the RS entry itself
+(`branch_target`, `branch_funct3`, `branch_NPC`), not into a shared latch. The
+prediction packet rides into the branch's ROB entry so commit can compare
+predicted vs. actual. See `pipeline.sv:304-402`.
 
 **5. Issue.** The RS finds the oldest entry whose two source operands are both
 ready (with same-cycle CDB wakeup folded in) and drives `issue_valid` plus the
@@ -289,16 +359,21 @@ CDB / store_done > commit > dispatch**. That ordering is what makes
 dispatch-and-commit-in-the-same-cycle correct.
 
 **9. Commit.** The ROB head retires when it is busy and ready. Commit drives the
-regfile write port, latches `HALTED_ON_WFI` or `ILLEGAL_INST` into
-`error_status_reg`, and on a taken branch redirects `PC_reg` to the committed
-target. For JAL/JALR, the committed value is overridden to be the entry's
-NPC (the return address), since the CDB-broadcast value for those is the
-branch target, not the link value. The RAT entry for the committing
-destination is cleared *only* if it still points at this ROB slot, so a
-younger instruction that already re-renamed the same architectural register
-does not get its mapping clobbered. The ROB also exposes `commit_tag` and
+regfile write port and latches `HALTED_ON_WFI` or `ILLEGAL_INST` into
+`error_status_reg`. The commit stage also runs the mispredict check: for each
+committing branch it compares `predicted_taken` / `predicted_target` against
+the entry's actual `take_branch` / `branch_target`, and on a mismatch raises a
+one-cycle `mispredict_valid` / `mispredict_target` sideband. That sideband
+flushes the RS, the LSQ, and any in-flight MULT, and redirects `PC_reg` to
+the correct target. For JAL/JALR, the committed register value is overridden
+to the entry's NPC — the return address — since the CDB-broadcast value
+for those is the branch target. The RAT entry for the committing destination
+is cleared *only* if it still points at this ROB slot, so a younger
+instruction that already re-renamed the same architectural register does not
+get its mapping clobbered. The ROB also exposes `commit_tag` and
 `commit_is_store` so the LSQ can release its head store at exactly the right
-cycle.
+cycle, and `commit_is_uncond_branch` / `commit_branch_PC` so the branch
+predictor can update the BTB and BHT.
 
 That is the entire dataflow. There is no separate physical register file: the
 ROB entries themselves are the physical registers, which is why
@@ -324,8 +399,9 @@ The single source of truth for global parameters and shared types.
   structs from the in-order P3 pipeline. Our P6 design does not use them; they
   are kept for reference and to keep the legacy `verilog/p3/` tree compiling.
 
-`BRANCH_PRED_SZ` is still the literal `xx` placeholder — the predictor has
-not landed yet.
+Branch-predictor sizing is set with `BTB_ENTRIES` (= 32) and `BHT_ENTRIES`
+(= 64). The file also defines `BRANCH_PRED_PACKET`, the bundle that rides
+from fetch into the ROB so commit can run the mispredict check.
 
 ### 5.2 `verilog/ISA.svh`
 
@@ -421,14 +497,21 @@ Each ROB entry holds:
 
 ```
 busy, ready, dest_reg, value, NPC,
-halt, illegal, is_branch, is_store, take_branch, branch_target
+halt, illegal, is_branch, is_store, take_branch, branch_target,
+predicted_taken, predicted_target, is_uncond_branch, branch_PC
 ```
 
-Three groups of ports:
+The last four fields feed the commit-time mispredict check and the predictor
+update.
+
+Four groups of ports:
 
 - **Dispatch side.** Inputs: `dispatch_valid`, `dispatch_dest_reg`,
   `dispatch_NPC`, `dispatch_halt`, `dispatch_illegal`, `dispatch_is_branch`,
-  `dispatch_is_store`. Outputs: `rob_full`, `dispatch_tag` (= current tail).
+  `dispatch_is_store`, `dispatch_is_uncond_branch`, `dispatch_branch_PC`, and
+  the prediction packet (`dispatch_predicted_taken`,
+  `dispatch_predicted_target`). Outputs: `rob_full`, `dispatch_tag`
+  (= current tail).
 - **Complete side.** The CDB inputs: `cdb_valid`, `cdb_tag`, `cdb_value`,
   `cdb_take_branch`, `cdb_branch_target`. The ROB marks
   `entries[cdb_tag].ready = 1` and stores the value. Stores complete
@@ -440,11 +523,19 @@ Three groups of ports:
   `commit_halt`, `commit_illegal`, `commit_is_branch`, `commit_take_branch`,
   `commit_branch_target`, plus `commit_tag` and `commit_is_store` so the
   LSQ knows when its head store has been retired and can release it to the
-  cache. Commit fires whenever the head entry is busy and ready. For JAL
-  and JALR (the only branches with a non-zero destination), the committed
-  value is overridden to the entry's NPC, since the CDB-broadcast value is
-  the branch target and the link register needs the return address. That
-  override is what fixed the milestone 2 silent-zero JAL/JALR bug.
+  cache, and `commit_is_uncond_branch` / `commit_branch_PC` so the branch
+  predictor can update its tables. Commit fires whenever the head entry is
+  busy and ready. For JAL and JALR (the only branches with a non-zero
+  destination), the committed value is overridden to the entry's NPC, since
+  the CDB-broadcast value is the branch target and the link register needs
+  the return address. That override is what fixed the milestone 2
+  silent-zero JAL/JALR bug.
+- **Mispredict side.** `mispredict_valid` / `mispredict_target` are a
+  one-cycle sideband that commit raises whenever the committing branch's
+  `predicted_taken` / `predicted_target` disagree with the actual
+  `take_branch` / `branch_target`. The pipeline fans this out as `flush` on
+  the RS, LSQ, and in-flight MULT, and redirects `PC_reg` to the correct
+  target.
 
 Two **RAT query ports** answer rename questions at dispatch time. They include
 same-cycle CDB bypass: if the CDB is completing the same tag the RAT points at
@@ -460,8 +551,10 @@ it still points at the head being committed; if a younger instruction has
 already re-renamed the same architectural register, the older commit leaves
 the RAT alone.
 
-Flush is wired to `1'b0` from `pipeline.sv` for now. It will become live
-when the branch predictor lands and we need to recover from a mispredict.
+Flush is live. It is driven by the ROB's own `mispredict_valid` output,
+fanned back in through `pipeline.sv`. On flush the ROB drops all
+uncommitted entries behind the head, clears the RAT, and resets the
+tail to the head (or head+1 if the head itself is mid-commit).
 
 ### 5.8 `verilog/rs.sv`
 
@@ -473,8 +566,17 @@ Each entry holds:
 ```
 busy, op[7:0], dest_tag,
 src1_ready, src1_tag, src1_value,
-src2_ready, src2_tag, src2_value
+src2_ready, src2_tag, src2_value,
+branch_funct3, branch_target, branch_NPC
 ```
+
+The three branch fields replace the shared `branch_target_buf` /
+`branch_funct3_buf` latches that milestone 2 and 3 used — each in-flight
+branch now carries its own target, funct3, and link NPC. The CDB forwards
+`branch_NPC` as the JAL/JALR link value (the ROB then overrides it with
+the architectural NPC at commit), so same-cycle consumers on the RAT
+query, RS wakeup, and LSQ wakeup paths see the correct return address.
+Broadcasting 0 there produced the milestone 2 silent-zero bug.
 
 The `op` field is the 8-bit packed dispatch opcode. From `pipeline.sv:138`:
 
@@ -554,11 +656,17 @@ architectural memory cannot be written on a mis-speculated path. The
 trade-off is that a load behind a store pays the full cache miss latency
 at least once per line.
 
-A `flush` input exists for branch-mispredict recovery, but it is currently
-tied off because branches still serialize the front-end via
-`branch_pending`. When early branch resolution lands as an advanced
-feature, the LSQ flush will need to drop in-flight non-committed entries
-and abandon any in-flight cache requests.
+The `flush` input is live and driven by the ROB's `mispredict_valid`. On
+flush the LSQ walks from the head and keeps only `is_store && committed`
+entries — a committed store mid-handshake with the D-cache cannot be
+dropped, the architecture has already released it. Everything younger
+goes away, and the tail is reset to the first non-busy slot. A one-bit
+`stale_response_pending` counter swallows the D-cache response belonging
+to a flushed in-flight load so it cannot be mistaken for the next LSQ
+head's data. The `proc_busy` signal from the D-cache is wired back in so
+the LSQ also swallows the response from a load the cache accepted on
+the same cycle as the flush — without it `sort_search` looped forever
+on an orphaned fetch.
 
 ### 5.10 `verilog/mult.sv` and `verilog/mult_stage.sv`
 
@@ -590,21 +698,25 @@ to pick multiple oldest-ready entries from the RS in one cycle.
 ### 5.12 `verilog/pipeline.sv`
 
 The top-level. Wires all of the above into the dataflow described in
-section 4. About 720 lines now, most of it port plumbing, the
+section 4. About 870 lines now, most of it port plumbing, the
 operand-resolution muxes, the inline ALU, the inline branch resolver, the
 multiplier handshake, the LSQ instantiation and store-data resolver, the
 dcache instantiation, the dcache/icache bus arbitration, the CDB priority
-arbiter, and the PC update logic. There is no other top-level glue file;
-everything is here.
+arbiter, the branch-predictor instantiation and update drive, the
+mispredict flush fan-out, and the PC update logic. There is no other
+top-level glue file; everything is here.
 
 Notable signals to grep for when navigating it:
 
-- `stall` — global front-end stall. Set by icache miss, RS full, ROB full, or
-  pending branch.
-- `branch_pending` — set at dispatch of any branch, cleared when the branch
-  commits. Serializes branches.
-- `branch_target_buf`, `branch_funct3_buf` — branch info latched at dispatch
-  so the inline branch resolver can use it later when the branch issues.
+- `stall` — global front-end stall. Set by icache miss, RS full, or ROB full.
+  It is no longer gated by a pending branch.
+- `mispredict_valid`, `mispredict_target` — the one-cycle sideband from the
+  ROB that triggers an RS/LSQ/MULT flush and a PC redirect.
+- `branch_pending`, `branch_target_buf`, `branch_funct3_buf` — all tied to
+  zero, but the wires are still present. They are load-bearing for the
+  `+define+SERIALIZE_BRANCHES` diagnostic ifdef that reinstates
+  milestone-3 front-end serialization (the base-design sign-off baseline).
+  Do not remove until a different reference replaces them.
 - `dispatch_fire` — handshake bit that drives both ROB and RS dispatch.
 - `dispatch_tag` — the renamed destination tag, equal to the ROB tail.
 - `cdb_valid`, `cdb_tag`, `cdb_value`, `cdb_take_branch`, `cdb_branch_target` —
@@ -616,7 +728,30 @@ Notable signals to grep for when navigating it:
 - `error_status_reg` — latched halt/illegal exception code that the testbench
   watches to know when to stop.
 
-### 5.13 `verilog/p3/`
+### 5.13 `verilog/branch_predictor.sv`
+
+The branch predictor. A 32-entry direct-mapped BTB (indexed by `PC[6:2]`
+with a `PC[31:7]` tag) paired with a 64-entry bimodal direction table of
+2-bit saturating counters. Sizes are `BTB_ENTRIES` and `BHT_ENTRIES` in
+`sys_defs.svh`.
+
+Two ports:
+
+- **Predict (combinational).** Given a fetch PC, returns
+  `{pred_valid, pred_taken, pred_target, pred_is_uncond}`. `pred_valid`
+  requires a BTB tag hit; `pred_taken` combines the BTB's `is_uncond` bit
+  with the BHT's top counter bit (uncond branches always predict taken
+  once seen); `pred_target` is the BTB's stored target.
+- **Update (registered).** Driven once per committing branch out of the
+  ROB. Writes the BTB entry (tag, target, is_uncond) and updates the BHT
+  counter (+1 if taken, −1 if not, saturating at `11` / `00`). On reset
+  counters start at weakly-not-taken `01`.
+
+Bring-up details, the four integration bugs removing `branch_pending`
+exposed, and the per-program accuracy numbers are in
+[`branch-predictor-report.md`](branch-predictor-report.md).
+
+### 5.14 `verilog/p3/`
 
 Legacy P3 in-order pipeline (`pipeline.sv`, `stage_if.sv`, `stage_id.sv`,
 `stage_ex.sv`, `stage_mem.sv`, plus its own `regfile.sv` and `ISA.svh`). Not
@@ -629,7 +764,8 @@ decoder and a few datapath details in our P4 work were lifted from here.
 
 All testbenches live in `test/`. The build system expects each tested module to
 have a matching testbench file: `verilog/foo.sv` pairs with `test/foo_test.sv`,
-declared in the Makefile as `TESTED_MODULES = mult rob rs dcache lsq`.
+declared in the Makefile as
+`TESTED_MODULES = mult rob rs dcache lsq branch_predictor`.
 
 A testbench is considered passing only if it `$display`s the literal string
 `@@@ Passed`. The `.pass` Makefile targets are just `grep`. Failures should
@@ -697,12 +833,25 @@ the head store. `make lsq.pass` and `make lsq.syn.pass` both pass. The
 synth slack on the LSQ is the tight one — about 0.4 ps — so it would be
 the first thing to gate a clock-period reduction.
 
-### 6.8 `test/vtuber_test.sv`, `test/vtuber.cpp`, `test/riscv_inst.h`
+### 6.8 `test/branch_predictor_test.sv`
+
+Unit testbench for the branch predictor. Nine scenarios: cold-miss
+(empty BTB returns `pred_valid=0`), first-time learning (an update
+registers next cycle), direction-counter learning and saturation in
+both directions, the strongly-taken → weakly-taken flip on one not-taken
+observation, tag aliasing (same index, different tag → miss), and
+write-then-read ordering. Unconditional branches are exercised with
+`update_is_uncond=1` so the predictor can confirm the "always taken once
+seen" path. Both `make branch_predictor.pass` and
+`make branch_predictor.syn.pass` are green, with 100% line and branch
+coverage on the DUT.
+
+### 6.9 `test/vtuber_test.sv`, `test/vtuber.cpp`, `test/riscv_inst.h`
 
 The ncurses visual debugger inherited from P3. `make <prog>.vis` runs it for a
 given program. Useful for staring at the pipeline state at a specific cycle.
 
-### 6.9 `test/pipeline_print.c`
+### 6.10 `test/pipeline_print.c`
 
 DPI-C helpers for pretty-printing pipeline state from `pipeline_test.sv`.
 Mostly commented out by default; uncomment and recompile when you need a
@@ -736,6 +885,7 @@ make rs.pass                # run the RS unit test
 make mult.pass              # run the multiplier unit test
 make dcache.pass            # run the D-cache unit test
 make lsq.pass               # run the LSQ unit test
+make branch_predictor.pass  # run the branch-predictor unit test
 make rob.syn.pass           # same, but on the synthesized module
 make rob.coverage           # generate the coverage hierarchy report
 
@@ -764,12 +914,13 @@ re-synthesizing the full pipeline is slow.
 - `make rob.pass`, `make rs.pass`, `make mult.pass`, `make dcache.pass`, and
   `make lsq.pass` all pass in simulation. The ROB, RS, dcache, and LSQ also
   pass on the synthesized netlist (`*.syn.pass`).
-- 18 of 33 test programs in `programs/` reach `HALTED_ON_WFI` end-to-end —
-  about 55%, up from roughly 30% at the milestone 2 baseline. The new
-  passes include `saxpy` (the first program with real loads and stores in
-  a loop), `fib_rec`, `sampler`, and five C programs (`basic_malloc`,
-  `fc_forward`, `insertionsort`, `omegalul`, `priority_queue`). Per-program
-  numbers are in [`milestone3-results.md`](milestone3-results.md).
+- All 34 test programs in `programs/` reach `HALTED_ON_WFI` end-to-end.
+  Every `.wb` stream is byte-identical to the same commit rebuilt with
+  `+define+SERIALIZE_BRANCHES`, so speculation introduces zero
+  architectural divergence. The milestone 3 per-program numbers are in
+  [`milestone3-results.md`](milestone3-results.md); the milestone 4
+  sign-off numbers, including the branch-heavy speedups, are in
+  [`base-design-verification.md`](base-design-verification.md).
 - The full memory subsystem works: byte/half/word RV32IM loads and stores
   through the LSQ and write-back D-cache, with sub-word stores absorbed as
   byte-enable masks. Writebacks only fire on dirty evictions.
@@ -891,7 +1042,11 @@ memory-side equivalent, including the commit-time store release.
 stores from round-tripping to memory.
 
 For context, `milestone3-report.md` covers memory bring-up,
-`rs-issue-loop-fix.md` covers the combinational loop that killed 15
-programs, and `base-design-verification.md` has the sign-off numbers.
-`week3-merge-report.md` and `week4-mult_no_lsq-findings.md` are earlier
-history — skip them unless you're bisecting an old regression.
+`rs-issue-loop-fix.md` covers the combinational loop that killed about
+fifteen tight-loop programs, `branch-predictor-report.md` covers the
+predictor bring-up and the four integration bugs that surfaced when
+`branch_pending` came off, and `base-design-verification.md` has the
+sign-off numbers. `verilog/branch_predictor.sv` itself is small enough
+to read end-to-end in one sitting. `week3-merge-report.md` and
+`week4-mult_no_lsq-findings.md` are earlier history — skip them unless
+you're bisecting an old regression.
