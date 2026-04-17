@@ -1,17 +1,6 @@
 # Project Overview
 
-This document is the orientation guide for the EECS 4340 final project repository.
-It is meant for someone who has never opened the source before and wants to know:
-
-- what the project is,
-- what we have built so far,
-- where each file lives and what it does,
-- how to actually run things,
-- and where the rough edges are.
-
-The full specification is in [`project-description.md`](project-description.md).
-Our team's plan for hitting it is in [`project-proposal.md`](project-proposal.md).
-This file complements those two; it does not repeat them.
+Orientation doc. If you haven't opened the source before, read this first. It covers what we built, where it lives, how to run it, and which edges are still sharp. Spec is in [`project-description.md`](project-description.md), team plan in [`project-proposal.md`](project-proposal.md); this file doesn't repeat either.
 
 ---
 
@@ -891,25 +880,18 @@ on the RS→MULT stage-0 critical path, which is its own follow-up change.
 
 ## 10. Where to look next
 
-If you are reading this for the first time and want a single starting point:
+Reading order for a first-time walkthrough: `verilog/pipeline.sv` for wire
+declarations and stall logic, then the ROB/RS/LSQ instantiation block in
+the same file. Read `verilog/rob.sv` next — the next-state priority block
+(flush > CDB/store_done > commit > dispatch) is where most of the rename
+subtlety lives, alongside the JAL/JALR commit-value override. `verilog/rs.sv`
+covers ALU/MULT/branch wakeup and issue; `verilog/lsq.sv` covers the
+memory-side equivalent, including the commit-time store release.
+`verilog/dcache.sv` has the byte-enable mask trick that keeps sub-word
+stores from round-tripping to memory.
 
-- Skim `verilog/pipeline.sv` for the wire declarations and stall logic.
-- Then the ROB / RS / LSQ instantiation block in `pipeline.sv` for how the
-  three queues talk to each other and the branch buffer.
-- Then `verilog/rob.sv` for the next-state priority block (flush > CDB /
-  store_done > commit > dispatch). That one block contains most of the
-  renaming subtleties, plus the JAL/JALR commit-value override.
-- Then `verilog/rs.sv` for wakeup and issue logic on the ALU/MULT/branch
-  side.
-- Then `verilog/lsq.sv` for the memory-side equivalent: dispatch, CDB
-  wakeup, head-only drain, and the commit-time store release.
-- Then `verilog/dcache.sv` for the byte-enable mask trick that lets sub-word
-  stores skip a round trip to memory.
-- Then [`milestone3-report.md`](milestone3-report.md) and
-  [`milestone3-results.md`](milestone3-results.md) for the current status,
-  the open tight-loop hang, and the per-program test table.
-- And [`week3-merge-report.md`](week3-merge-report.md) plus
-  [`week4-mult_no_lsq-findings.md`](week4-mult_no_lsq-findings.md) for the
-  earlier integration history and the original `mult_no_lsq` investigation.
-
-That should be enough to get oriented and start contributing.
+For context, `milestone3-report.md` covers memory bring-up,
+`rs-issue-loop-fix.md` covers the combinational loop that killed 15
+programs, and `base-design-verification.md` has the sign-off numbers.
+`week3-merge-report.md` and `week4-mult_no_lsq-findings.md` are earlier
+history — skip them unless you're bisecting an old regression.

@@ -1,10 +1,9 @@
 # Base Design Verification
 
-The evidence that the 1-wide out-of-order P6 base design is complete and
-safe to build advanced features (2-way superscalar, early tag broadcast)
-on top of. Three buckets of data: per-module sim/synth pass matrix,
-per-program regression against a pre-speculation baseline, and full-pipeline
-synthesis slack.
+Evidence that the 1-wide P6 base design is done and ready to build 2-way
+superscalar and early tag broadcast on top of. Below: per-module sim/synth
+matrix, per-program regression against a pre-speculation baseline, and
+full-pipeline synthesis slack.
 
 **Change:** `openspec/changes/finalize-base-design/`
 
@@ -13,48 +12,6 @@ synthesis slack.
 **Baseline (golden `.wb` reference):** the same `058a8aa` RTL compiled
 with `+define+SERIALIZE_BRANCHES`. See §1.1 for why this replaces the
 original proposal's choice of the `release` branch.
-
-### 1.1 Baseline-source correction (deviation from proposal/design)
-
-The proposal and design docs name the **`release` branch** as the
-"last known-good pre-branch-predictor baseline." That claim does not
-hold in this repository:
-
-- `git log --oneline release` shows two commits
-  (`817c826 Initial release`, `5802c8a explain milestone 1 & 2 progress`).
-  That is the instructor's original VeriSimpleV template, not a
-  milestone-3-era checkpoint.
-- `release`'s `verilog/` directory has none of the project modules:
-  no `rob.sv`, `rs.sv`, `lsq.sv`, `dcache.sv`, or `branch_predictor.sv`.
-  Its `pipeline.sv` is the legacy in-order P3 pipeline (the same one
-  now quarantined under `verilog/p3/` on `milestone4`).
-- Running `make simulate_all` on `release` produces **33 `.wb` files
-  of 0 bytes each** and every `.out` reports
-  `System halted on unknown error code x` at
-  `100000006 cycles / x instrs = inf CPI` — the 100 M-cycle
-  testbench watchdog firing with zero committed instructions.
-
-So the `release`-based `.wb` diff scenario cannot be satisfied as the
-proposal described. The baseline that *was* meant to exist — "the same
-RTL and testbench, minus speculative execution" — is available via a
-different mechanism: `SERIALIZE_BRANCHES`, the diagnostic ifdef in
-`verilog/pipeline.sv` (documented in `CLAUDE.md`) that ties
-`branch_pending` to one and reinstates milestone-3 front-end
-serialization on in-flight branches.
-
-**Chosen baseline:** a worktree at `../4340-p4-serialize`, detached
-HEAD at `058a8aa`, with `+define+SERIALIZE_BRANCHES` added to the
-worktree's `VCS` command. Same RTL, same testbench, same programs,
-but speculation is off. Any `.wb` divergence against this baseline
-would have to be something the branch predictor or its integration
-introduced — which is what the spec scenario "Writeback equivalence
-against the pre-speculation baseline" is trying to catch.
-
-The main milestone4 tree is untouched. The baseline build lives
-entirely in `../4340-p4-serialize` and the `+define+SERIALIZE_BRANCHES`
-edit is local to that worktree's `Makefile`.
-
----
 
 ## 1. Preflight environment
 
@@ -330,9 +287,9 @@ superscalar advanced feature and are not implemented in the base design:
   currently runs on the shared ALU. A dedicated BTU is only load-bearing
   when the ALU is contended, which is a superscalar problem.
 
-Both are scoped into the 2-way superscalar change (the next advanced
-feature on the roadmap per `doc/project-overview.md`). This deferral is
-explicit, not silent.
+Both are scoped into the 2-way superscalar change, which is the next
+advanced feature on the roadmap per `doc/project-overview.md`. Flagged
+here so the deferral is on the record.
 
 ---
 
@@ -422,24 +379,16 @@ spec requires the synth pass count to equal the sim pass count.
 
 ### 7.2 Statement
 
-**The base design is signed off.**
-
-- Per-module sim and synth: **6/6 green** (§2.1). Module coverage
-  captured in §2.2.
-- Full-suite simulation: **34/34 halt, 34/34 `.wb` byte-identical**
-  against the `SERIALIZE_BRANCHES` baseline (§3.1–§3.2). Zero
-  speculative divergence. Branch-heavy programs speed up as
-  expected.
-- Full-pipeline netlist: **built, slack reported.** Worst slack
-  −309.07 ps on the RS→MULT stage-0 combinational path (§4). Timing
-  closure at 1000 ps is a deliberate follow-up — recorded, not
-  hidden by relaxing `CLOCK_PERIOD`, which is the spec's required
-  behavior for the negative-slack case.
-- Synthesized full-suite: **34/34 halt, 34/34 `.syn.wb`
-  byte-identical** to `.wb` (§6.1). Synth pass count equals sim pass
-  count.
-- Deferred items (second ALU, separate BTU) called out in §5 as
-  superscalar-phase work. No silent gaps.
+The base design is signed off. All six tested modules pass in sim and
+synth (§2.1, coverage §2.2). Full-suite simulation halts cleanly on 34 of
+34 programs and produces `.wb` streams byte-identical to the
+`SERIALIZE_BRANCHES` baseline (§3.1–§3.2); branch-heavy programs speed up
+and nothing regresses. The netlist builds, with worst slack −309.07 ps on
+the RS→MULT stage-0 path (§4). Closure at 1000 ps is a follow-up,
+recorded here rather than swept under a looser `CLOCK_PERIOD`. The
+synthesized regression matches the simulated one at 34/34 (§6.1).
+Second-ALU and separate-BTU proposal items are deferred to the
+superscalar phase (§5).
 
 All spec scenarios in
 `openspec/changes/finalize-base-design/specs/base-design-verification/spec.md`

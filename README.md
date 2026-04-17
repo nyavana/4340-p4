@@ -414,29 +414,27 @@ on `milestone3` (fast-forward from `2532ed4`).
 
 ## Progress: Milestone 4 (branch prediction) — base design complete and signed off
 
-Milestone 4 brings up the branch-prediction path: a direct-mapped
-32-entry BTB and a 64-entry bimodal (2-bit saturating) direction
-table, wired into fetch combinationally and updated at commit.
-`branch_pending` is now tied to zero, so multiple branches can be in
-flight at once. Commit-time mispredicts raise a one-cycle
-`mispredict_valid` / `mispredict_target` sideband from the ROB that
-flushes the RS, LSQ, and MULT and redirects the PC.
+Milestone 4 is branch prediction. Direct-mapped 32-entry BTB, 64-entry
+bimodal with 2-bit counters, combinational predict at fetch, registered
+update at commit. `branch_pending` is tied to zero, so several branches
+can be in flight at once; on a mispredict the ROB raises a one-cycle
+`mispredict_valid` / `mispredict_target` sideband that flushes RS, LSQ,
+and MULT and redirects the PC.
 
-**Base design sign-off:** full evidence in
-[`doc/base-design-verification.md`](doc/base-design-verification.md).
-Per-module sim and synth are green across all 6 `TESTED_MODULES`.
-All 34 programs halt on WFI both on `milestone4` and on the same
-commit rebuilt with `+define+SERIALIZE_BRANCHES` (the diagnostic
-serialized-front-end ifdef already in `pipeline.sv`), and every
-`.wb` writeback stream is byte-identical between the two runs — so
-the branch predictor does not touch architectural state, it only
-reorders when non-branch instructions show up. Branch-heavy
+Base design is signed off. Evidence is in
+[`doc/base-design-verification.md`](doc/base-design-verification.md): all
+6 tested modules pass in sim and synth, and every one of the 34 programs
+halts on WFI both on `milestone4` and on the same commit rebuilt with
+`+define+SERIALIZE_BRANCHES` (the diagnostic serialized-front-end ifdef
+already in `pipeline.sv`), with every `.wb` writeback stream byte-identical
+between the two runs. The branch predictor doesn't touch architectural
+state; it just reorders when non-branch instructions show up. Branch-heavy
 benchmarks speed up: `fib_rec` −10.5%, `insertion` −6.5%,
 `insertionsort` −6.4%, `sort_search` −5.9%, `fc_forward` −4.3%,
 `outer_product` −3.8%, `quicksort` −3.5%. Nothing regresses.
-Full-pipeline synthesis (`synth/pipeline.vg`) is built and reported:
-worst slack −309 ps on the RS→MULT stage-0 combinational path.
-Retune is a deliberate follow-up.
+Full-pipeline synthesis (`synth/pipeline.vg`) is built and reported: worst
+slack −309 ps on the RS→MULT stage-0 combinational path. Retune is a
+follow-up.
 
 Four integration bugs showed up during bring-up, all hidden by the
 old front-end serialization. They are written up in full in the

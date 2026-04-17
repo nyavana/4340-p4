@@ -52,11 +52,10 @@ in `icache.sv` for a PC change mid-fetch).
 
 ## Integration fixes uncovered during bring-up
 
-None of these three showed up in the predictor module's own unit test.
-They only surface once `branch_pending` goes away and multiple
-branches plus their speculative tails can be in flight at the same
-time. All three had to be fixed before most of the regression suite
-would halt.
+None of these showed up in the predictor's own unit test. They only
+surface once `branch_pending` is tied to zero and the pipeline has
+multiple branches and their speculative tails in flight together. Each
+one had to go in before most of the regression would halt.
 
 1. **CDB broadcast value for JAL/JALR.** The original pipeline put
    `0` on `cdb_value` for uncond branches and relied on the ROB's
@@ -360,7 +359,7 @@ back-to-back flushes.
    against the BTB's single last-committed target per entry;
    every switch between recursive frames mispredicts.
 
-## Known limitations (by design, not bugs)
+## Known limitations
 
 - JALR targets change per call site. The bimodal predictor keeps
   one last-committed target per BTB entry, so every call-site
