@@ -152,6 +152,17 @@ module pipeline (
     logic [63:0]      mult_product;
     logic [63:0]      mult_mcand, mult_mplier;
     logic             mult_done_valid; // mult_done && !mult_flushed
+    logic             mult_early_done;
+
+    // Early-tag sideband.  Pulses one cycle before `mult_done_valid`,
+    // carrying the ROB tag that will retire on the next CDB broadcast so
+    // the RS / LSQ can flip registered src*_ready the same cycle and issue
+    // the consumer on the CDB cycle instead of one cycle later.
+    //
+    // Rule: early_cdb_* is a wakeup-only sideband — it NEVER feeds the RS
+    // issue selector combinationally (see rs-issue-loop-fix.md).
+    logic             early_cdb_valid;
+    logic [TAG_W-1:0] early_cdb_tag;
 
     // ALU
     logic [`XLEN-1:0] alu_result;
@@ -574,6 +585,9 @@ module pipeline (
         .cdb_tag             (cdb_tag),
         .cdb_value           (cdb_value),
 
+        .early_cdb_valid     (early_cdb_valid),
+        .early_cdb_tag       (early_cdb_tag),
+
         .issue_accept        (issue_accept),
         .issue_valid         (rs_issue_valid),
         .issue_op            (rs_issue_op),
@@ -615,6 +629,9 @@ module pipeline (
         .cdb_valid           (cdb_valid),
         .cdb_tag             (cdb_tag),
         .cdb_value           (cdb_value),
+
+        .early_cdb_valid     (early_cdb_valid),
+        .early_cdb_tag       (early_cdb_tag),
 
         .store_ready_valid   (lsq_store_ready_valid),
         .store_ready_tag     (lsq_store_ready_tag),
@@ -727,14 +744,32 @@ module pipeline (
     end
 
     mult mult_0 (
-        .clock   (clock),
-        .reset   (reset),
-        .mcand   (mult_mcand),
-        .mplier  (mult_mplier),
-        .start   (issue_accept && issue_is_mult),
-        .product (mult_product),
-        .done    (mult_done)
+        .clock      (clock),
+        .reset      (reset),
+        .mcand      (mult_mcand),
+        .mplier     (mult_mplier),
+        .start      (issue_accept && issue_is_mult),
+        .product    (mult_product),
+        .done       (mult_done),
+        .early_done (mult_early_done)
     );
+
+    // Early-tag producer.  Gated off by `mult_flushed` (producer poisoned
+    // by an older mispredict) and by `mispredict_valid` (new mispredict
+    // this cycle also clears every downstream consumer).  Consumers get a
+    // tag that is 1 cycle early; the real CDB broadcast on the next cycle
+    // will carry the value.
+    //
+    // `+define+DISABLE_EARLY_TAG` at the Makefile level forces the wire
+    // to 0 without any other code change; this is the A/B regression
+    // toggle called out in design §6 / requirement "Pipeline exposes a
+    // compile-time escape hatch".
+    `ifndef DISABLE_EARLY_TAG
+        assign early_cdb_valid = mult_early_done && !mult_flushed && !mispredict_valid;
+    `else
+        assign early_cdb_valid = 1'b0;
+    `endif
+    assign early_cdb_tag = mult_dest_tag_reg;
 
     always_ff @(posedge clock) begin
         if (reset) begin

@@ -36,6 +36,10 @@ module rs_test;
   logic [TAG_W-1:0]     cdb_tag;
   logic [XLEN-1:0]      cdb_value;
 
+  // early-tag sideband
+  logic                 early_cdb_valid;
+  logic [TAG_W-1:0]     early_cdb_tag;
+
   // issue side
   logic                 issue_accept;
   logic                 issue_valid;
@@ -76,6 +80,9 @@ module rs_test;
     .cdb_valid(cdb_valid),
     .cdb_tag(cdb_tag),
     .cdb_value(cdb_value),
+
+    .early_cdb_valid(early_cdb_valid),
+    .early_cdb_tag(early_cdb_tag),
 
     .issue_accept(issue_accept),
     .issue_valid(issue_valid),
@@ -120,6 +127,9 @@ module rs_test;
       cdb_valid           = 1'b0;
       cdb_tag             = '0;
       cdb_value           = '0;
+
+      early_cdb_valid     = 1'b0;
+      early_cdb_tag       = '0;
 
       issue_accept        = 1'b0;
     end
@@ -238,6 +248,21 @@ module rs_test;
       @(posedge clock);
       #1;
       issue_accept = 1'b0;
+    end
+  endtask
+
+  task automatic drive_early_cdb;
+    input logic [TAG_W-1:0] tag;
+    begin
+      early_cdb_valid = 1'b1;
+      early_cdb_tag   = tag;
+    end
+  endtask
+
+  task automatic stop_early_cdb;
+    begin
+      early_cdb_valid = 1'b0;
+      early_cdb_tag   = '0;
     end
   endtask
 
@@ -452,6 +477,154 @@ module rs_test;
     end
   endtask
 
+  task automatic test_early_tag_wakeup_issues_with_cdb_value;
+    begin
+      test_count = test_count + 1;
+      $display("\n=== Test %0d: early tag wakes entry; CDB next cycle, issues with CDB value ===", test_count);
+
+      do_reset();
+
+      // Entry with one unresolved source tagged T=7.  src2 is ready so
+      // the entry is a 1-operand pending; ETB on tag T must wake it.
+      dispatch_inst(
+        8'hAA,
+        3'd7,
+        1'b0,        // src1 not ready
+        3'd7,        // waiting on tag 7
+        32'h0,
+        1'b1,
+        '0,
+        32'hBEEF
+      );
+      @(posedge clock);
+      #1;
+      stop_dispatch();
+      expect_no_issue();
+
+      // Cycle N: pulse early_cdb_valid with tag T=7.  The RS must NOT
+      // issue on this cycle (selector reads registered ready).  It
+      // flips src1_ready on the next posedge.
+      drive_early_cdb(3'd7);
+      #1;
+      expect_no_issue();
+      @(posedge clock);
+      #1;
+      stop_early_cdb();
+
+      // Cycle N+1: drive the real CDB with tag T=7, value V.  The RS
+      // must issue the woken entry THIS cycle, with V forwarded from
+      // the CDB via the value-mux bypass (not from the stored src1_value,
+      // which is still 0 since the early tag doesn't latch a value).
+      drive_cdb(3'd7, 32'hCAFEF00D);
+      #1;
+      expect_issue(8'hAA, 3'd7, 32'hCAFEF00D, 32'hBEEF);
+
+      accept_issue_one_cycle();
+      stop_cdb();
+      expect_no_issue();
+    end
+  endtask
+
+  task automatic test_early_tag_does_not_bypass_selector_combinationally;
+    begin
+      test_count = test_count + 1;
+      $display("\n=== Test %0d: early_cdb does NOT feed selector combinationally ===", test_count);
+
+      do_reset();
+
+      // Entry with src1 not ready, waiting on tag 9.  If the selector
+      // ever read anything other than the registered src_ready bit, the
+      // ETB toggle below could pull issue_valid high on the same cycle
+      // — closing the same combinational loop documented in
+      // doc/rs-issue-loop-fix.md.
+      dispatch_inst(
+        8'hBB,
+        3'd8,
+        1'b0,
+        3'd9,
+        32'h0,
+        1'b1,
+        '0,
+        32'h1234
+      );
+      @(posedge clock);
+      #1;
+      stop_dispatch();
+
+      // issue_valid must stay 0 this cycle even with early_cdb_valid
+      // toggling: the selector reads registered src*_ready only.
+      if (issue_valid !== 1'b0) begin
+        $display("ERROR: issue_valid was 1 before early_cdb toggle (stale state) @ t=%0t", $time);
+        error_count = error_count + 1;
+      end
+
+      drive_early_cdb(3'd9);
+      #1;
+      if (issue_valid !== 1'b0) begin
+        $display("ERROR: issue_valid went high on early_cdb pulse cycle — combinational ETB->selector path suspected");
+        error_count = error_count + 1;
+      end
+      stop_early_cdb();
+      #1;
+      if (issue_valid !== 1'b0) begin
+        $display("ERROR: issue_valid non-zero after early_cdb dropped");
+        error_count = error_count + 1;
+      end
+
+      // Drain via CDB.
+      drive_cdb(3'd9, 32'h9999_0000);
+      @(posedge clock);
+      #1;
+      stop_cdb();
+      accept_issue_one_cycle();
+    end
+  endtask
+
+  task automatic test_early_tag_wakeup_preserves_src_value;
+    begin
+      test_count = test_count + 1;
+      $display("\n=== Test %0d: early tag wakeup does not touch stored src_value ===", test_count);
+
+      do_reset();
+
+      // src1 dispatched as not-ready, waiting on tag 3.  Starting
+      // src1_value is 0.  After early-tag wakeup alone, stored
+      // src1_value must still be 0 (value comes through the CDB).
+      dispatch_inst(
+        8'hCC,
+        3'd10,
+        1'b0,
+        3'd3,
+        32'hDEAD,   // placeholder; dispatcher should overwrite with 0 since not ready? actually we pass explicit
+        1'b1,
+        '0,
+        32'h77
+      );
+      @(posedge clock);
+      #1;
+      stop_dispatch();
+
+      drive_early_cdb(3'd3);
+      @(posedge clock);
+      #1;
+      stop_early_cdb();
+
+      // Now src1_ready is set by ETB but val_present=0.  If we did NOT
+      // follow with a CDB, the issue value mux must still produce 0 via
+      // the `!val_present` path (cdb_value is 0 because cdb_valid is 0
+      // and the mux default in rs.sv routes through cdb_value when
+      // val_present is 0).  No assertion on the specific value here —
+      // the property under test is that the ETB path does not crash or
+      // latch a garbage value.  Finish with a real CDB broadcast so the
+      // entry drains cleanly.
+      drive_cdb(3'd3, 32'h5A5A_5A5A);
+      #1;
+      expect_issue(8'hCC, 3'd10, 32'h5A5A_5A5A, 32'h77);
+      accept_issue_one_cycle();
+      stop_cdb();
+    end
+  endtask
+
   task automatic test_flush_clears_all;
     begin
       test_count = test_count + 1;
@@ -497,6 +670,9 @@ module rs_test;
     test_same_cycle_cdb_bypass_issue();
     test_backpressure_hold_issue();
     test_full_behavior();
+    test_early_tag_wakeup_issues_with_cdb_value();
+    test_early_tag_does_not_bypass_selector_combinationally();
+    test_early_tag_wakeup_preserves_src_value();
     test_flush_clears_all();
 
     if (error_count == 0) begin

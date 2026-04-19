@@ -69,6 +69,13 @@ module lsq #(
     input  logic [TAG_W-1:0]  cdb_tag,
     input  logic [XLEN-1:0]   cdb_value,
 
+    // ---- Early-tag sideband: wakeup-only, one cycle ahead of CDB. ----
+    // Mirrors the RS rules: flip the matching `*_ready` bit on the
+    // entry, leave `*_value` / `*_val_present` alone.  The actual value
+    // still arrives via the CDB snoop path above the next cycle.
+    input  logic              early_cdb_valid,
+    input  logic [TAG_W-1:0]  early_cdb_tag,
+
     // ---- Sideband to ROB so a store can become commit-ready ----
     output logic              store_ready_valid,
     output logic [TAG_W-1:0]  store_ready_tag,
@@ -113,10 +120,16 @@ module lsq #(
         logic              base_ready;
         logic [TAG_W-1:0]  base_tag;
         logic [XLEN-1:0]   base_value;
+        // See rs.sv `src*_val_present` — the ETB path flips
+        // base_ready=1 one cycle before the real value lands.  This bit
+        // tells the AGU not to trust base_value until the CDB snoop
+        // path has latched it.
+        logic              base_val_present;
 
         logic              data_ready;
         logic [TAG_W-1:0]  data_tag;
         logic [XLEN-1:0]   data_value;
+        logic              data_val_present;
 
         logic [XLEN-1:0]   imm;
         logic              addr_valid;
@@ -369,28 +382,66 @@ module lsq #(
                 next_count = next_count - 1'b1;
             end
         end else begin
-            // 1) CDB wakeup
+            // 1) CDB wakeup: latches the value AND flips ready +
+            //    val_present in one cycle.  Gated on `!val_present`
+            //    (not `!ready`) so the CDB can still latch the value
+            //    on an entry already woken by the early tag the prior
+            //    cycle (ready=1, val_present=0).  Early-tag wakeup
+            //    (below) is the weaker form: ready flips, val_present
+            //    stays 0.
             for (i = 0; i < LSQ_SIZE; i++) begin
-                if (entries[i].busy && cdb_valid) begin
-                    if (!entries[i].base_ready &&
+                if (entries[i].busy) begin
+                    if (cdb_valid && !entries[i].base_val_present &&
                         entries[i].base_tag == cdb_tag) begin
-                        next_entries[i].base_ready = 1'b1;
-                        next_entries[i].base_value = cdb_value;
+                        next_entries[i].base_ready       = 1'b1;
+                        next_entries[i].base_val_present = 1'b1;
+                        next_entries[i].base_value       = cdb_value;
                     end
-                    if (entries[i].is_store &&
-                        !entries[i].data_ready &&
+                    if (cdb_valid && entries[i].is_store &&
+                        !entries[i].data_val_present &&
                         entries[i].data_tag == cdb_tag) begin
+                        next_entries[i].data_ready       = 1'b1;
+                        next_entries[i].data_val_present = 1'b1;
+                        next_entries[i].data_value       = cdb_value;
+                    end
+
+                    // Early-tag wakeup: flip ready only.  The CDB path
+                    // above will latch the value and val_present next
+                    // cycle.  Mirrors rs.sv.
+                    if (early_cdb_valid && !entries[i].base_ready &&
+                        entries[i].base_tag == early_cdb_tag) begin
+                        next_entries[i].base_ready = 1'b1;
+                    end
+                    if (early_cdb_valid && entries[i].is_store &&
+                        !entries[i].data_ready &&
+                        entries[i].data_tag == early_cdb_tag) begin
                         next_entries[i].data_ready = 1'b1;
-                        next_entries[i].data_value = cdb_value;
                     end
                 end
             end
 
-            // 2) AGU - use the freshly woken value if any
+            // 2) AGU - use the freshly woken value if any.
+            //
+            // Gated on `next_entries[i].base_val_present` so a load whose
+            // base was woken by the early tag alone (base_ready=1 but
+            // val_present=0) waits one more cycle for the CDB to land
+            // the real value.  The CDB wakeup above updates
+            // next_entries[].base_val_present on the same always_comb
+            // pass, so the AGU fires on the CDB cycle — same timing as
+            // the pre-ETB path, with no new combinational hazard.
+            //
+            // Symmetrical-to-RS note (task 4.5 / design §3): the RS
+            // value-mux has a CDB bypass path for the "ready but not
+            // present" window.  The LSQ does NOT need one functionally
+            // because its CDB wakeup path already folds into
+            // next_entries[].base_val_present before the AGU reads it
+            // — any fully-symmetric mux would just duplicate that
+            // behaviour.  The symmetry is structural, not literal.
             for (i = 0; i < LSQ_SIZE; i++) begin
                 if (next_entries[i].busy &&
                     !next_entries[i].addr_valid &&
-                    next_entries[i].base_ready) begin
+                    next_entries[i].base_ready &&
+                    next_entries[i].base_val_present) begin
                     next_entries[i].addr =
                         next_entries[i].base_value + next_entries[i].imm;
                     next_entries[i].addr_valid = 1'b1;
@@ -470,13 +521,15 @@ module lsq #(
                 next_entries[tail].imm        = dispatch_imm;
                 next_entries[tail].dbg_pc     = dispatch_dbg_pc;
 
-                next_entries[tail].base_ready = dispatch_base_ready;
-                next_entries[tail].base_tag   = dispatch_base_tag;
-                next_entries[tail].base_value = dispatch_base_value;
+                next_entries[tail].base_ready       = dispatch_base_ready;
+                next_entries[tail].base_val_present = dispatch_base_ready;
+                next_entries[tail].base_tag         = dispatch_base_tag;
+                next_entries[tail].base_value       = dispatch_base_value;
 
-                next_entries[tail].data_ready = dispatch_data_ready;
-                next_entries[tail].data_tag   = dispatch_data_tag;
-                next_entries[tail].data_value = dispatch_data_value;
+                next_entries[tail].data_ready       = dispatch_data_ready;
+                next_entries[tail].data_val_present = dispatch_data_ready;
+                next_entries[tail].data_tag         = dispatch_data_tag;
+                next_entries[tail].data_value       = dispatch_data_value;
 
                 if (dispatch_base_ready) begin
                     next_entries[tail].addr       =

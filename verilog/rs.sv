@@ -43,6 +43,15 @@ module rs #(
     input  logic [TAG_W-1:0]      cdb_tag,
     input  logic [XLEN-1:0]       cdb_value,
 
+    // Early-tag sideband: wakeup-only.  One cycle before a multi-cycle
+    // producer drives the CDB it pulses early_cdb_valid with the tag
+    // that will retire next cycle.  We flip the registered src*_ready
+    // bit on the matching entry; no value is latched from this signal.
+    // MUST NOT be read by the issue selector (see rs-issue-loop-fix.md
+    // — combinational loop through `_eff`).
+    input  logic                  early_cdb_valid,
+    input  logic [TAG_W-1:0]      early_cdb_tag,
+
     // issue side (output of rs module)
     input  logic                  issue_accept, // handshake to another mocule
     output logic                  issue_valid, // if an entry can be issued
@@ -63,10 +72,17 @@ module rs #(
         logic                 src1_ready;
         logic [TAG_W-1:0]     src1_tag;
         logic [XLEN-1:0]      src1_value;
+        // Set when src1_value actually holds the operand.  Diverges from
+        // src1_ready only during the one-cycle ETB window: an early-tag
+        // wakeup flips src1_ready=1 but leaves src1_val_present=0 until
+        // the real CDB broadcast arrives the next cycle.  The issue
+        // value-mux uses this to know when to forward cdb_value instead.
+        logic                 src1_val_present;
 
         logic                 src2_ready;
         logic [TAG_W-1:0]     src2_tag;
         logic [XLEN-1:0]      src2_value;
+        logic                 src2_val_present;
 
         logic [2:0]           branch_funct3;
         logic [XLEN-1:0]      branch_target;
@@ -121,9 +137,18 @@ module rs #(
     end
 
     // pick first ready entry to issue
+    //
+    // IMPORTANT: this selector reads the REGISTERED `src*_ready` bits.
+    // It MUST NOT reference `src*_ready_eff` (combinational CDB bypass)
+    // or early_cdb_* — folding either here closes the selector ->
+    // cdb_valid -> issue_accept loop documented in
+    // doc/rs-issue-loop-fix.md that hung ~15 programs.  ETB flips
+    // `src*_ready` through `next_entries` (one cycle later); the
+    // selector sees the effect on the ETB+1 cycle, which is the same
+    // cycle as the real CDB broadcast that carries the value.
     always_comb begin
         integer i;
-        
+
         issue_found = 1'b0;
         issue_idx   = '0;
         for (i = 0; i < RS_SIZE; i++) begin
@@ -156,17 +181,30 @@ module rs #(
             issue_branch_target = entries[issue_idx].branch_target;
             issue_branch_NPC    = entries[issue_idx].branch_NPC;
 
-            issue_src1_value = (cdb_valid &&
-                                entries[issue_idx].busy &&
-                                !entries[issue_idx].src1_ready &&
-                                (entries[issue_idx].src1_tag == cdb_tag))
+            // Value-mux: forward the CDB value on the issue cycle when
+            // either (a) the entry is being woken by this cycle's CDB
+            // (standard same-cycle bypass, guarded by `!src*_ready` so
+            // a stale tag match on an already-resolved entry cannot
+            // overwrite a latched value), or (b) the entry's stored
+            // value is not yet present — this second arm catches the
+            // ETB case, where `src*_ready` was flipped to 1 by the
+            // early tag on the prior cycle but the value has not been
+            // latched yet.  On an ETB+CDB cycle the producer gating
+            // guarantees CDB is broadcasting our matching tag, so
+            // `cdb_value` is the correct operand to forward.
+            issue_src1_value = ((cdb_valid &&
+                                 entries[issue_idx].busy &&
+                                 !entries[issue_idx].src1_ready &&
+                                 (entries[issue_idx].src1_tag == cdb_tag))
+                                || !entries[issue_idx].src1_val_present)
                              ? cdb_value
                              : entries[issue_idx].src1_value;
 
-            issue_src2_value = (cdb_valid &&
-                                entries[issue_idx].busy &&
-                                !entries[issue_idx].src2_ready &&
-                                (entries[issue_idx].src2_tag == cdb_tag))
+            issue_src2_value = ((cdb_valid &&
+                                 entries[issue_idx].busy &&
+                                 !entries[issue_idx].src2_ready &&
+                                 (entries[issue_idx].src2_tag == cdb_tag))
+                                || !entries[issue_idx].src2_val_present)
                              ? cdb_value
                              : entries[issue_idx].src2_value;
         end
@@ -182,19 +220,43 @@ module rs #(
                 next_entries[i] = '0;
             end
         end else begin
-            // CDB wakeup
+            // CDB wakeup: flips both src*_ready and src*_val_present, and
+            // latches the value.  Gated on `!val_present` (not `!ready`)
+            // so the CDB can still latch the value on an entry that was
+            // already woken by the early tag the prior cycle (ready=1,
+            // val_present=0).  ETB wakeup (below) is the weaker form —
+            // it only flips src*_ready, leaving val_present=0.
             for (i = 0; i < RS_SIZE; i++) begin
                 if (entries[i].busy) begin
-                    if (cdb_valid && !entries[i].src1_ready &&
+                    if (cdb_valid && !entries[i].src1_val_present &&
                         (entries[i].src1_tag == cdb_tag)) begin
-                        next_entries[i].src1_ready = 1'b1;
-                        next_entries[i].src1_value = cdb_value;
+                        next_entries[i].src1_ready       = 1'b1;
+                        next_entries[i].src1_val_present = 1'b1;
+                        next_entries[i].src1_value       = cdb_value;
                     end
 
-                    if (cdb_valid && !entries[i].src2_ready &&
+                    if (cdb_valid && !entries[i].src2_val_present &&
                         (entries[i].src2_tag == cdb_tag)) begin
+                        next_entries[i].src2_ready       = 1'b1;
+                        next_entries[i].src2_val_present = 1'b1;
+                        next_entries[i].src2_value       = cdb_value;
+                    end
+
+                    // Early-tag wakeup: flips src*_ready only.  A later
+                    // CDB broadcast on the next cycle will overwrite
+                    // val_present=1 via the path above.  Safe to OR with
+                    // the CDB path in the same always_comb: if both fire
+                    // the same cycle (same tag on CDB and early), the
+                    // CDB path runs first and sets val_present=1; this
+                    // block's attempt to only set src*_ready is a no-op.
+                    if (early_cdb_valid && !entries[i].src1_ready &&
+                        (entries[i].src1_tag == early_cdb_tag)) begin
+                        next_entries[i].src1_ready = 1'b1;
+                    end
+
+                    if (early_cdb_valid && !entries[i].src2_ready &&
+                        (entries[i].src2_tag == early_cdb_tag)) begin
                         next_entries[i].src2_ready = 1'b1;
-                        next_entries[i].src2_value = cdb_value;
                     end
                 end
             end
@@ -204,23 +266,28 @@ module rs #(
                 next_entries[issue_idx] = '0;
             end
 
-            // insert new dispatched entry
+            // insert new dispatched entry.  val_present follows ready at
+            // dispatch time: ready=1 implies the value field is populated
+            // (either dispatched with an immediate/regfile read, or
+            // dispatch-time CDB bypass).
             if (dispatch_valid && free_found) begin
-                next_entries[free_idx].busy          = 1'b1;
-                next_entries[free_idx].op            = dispatch_op;
-                next_entries[free_idx].dest_tag      = dispatch_dest_tag;
+                next_entries[free_idx].busy             = 1'b1;
+                next_entries[free_idx].op               = dispatch_op;
+                next_entries[free_idx].dest_tag         = dispatch_dest_tag;
 
-                next_entries[free_idx].src1_ready    = dispatch_src1_ready;
-                next_entries[free_idx].src1_tag      = dispatch_src1_tag;
-                next_entries[free_idx].src1_value    = dispatch_src1_value;
+                next_entries[free_idx].src1_ready       = dispatch_src1_ready;
+                next_entries[free_idx].src1_val_present = dispatch_src1_ready;
+                next_entries[free_idx].src1_tag         = dispatch_src1_tag;
+                next_entries[free_idx].src1_value       = dispatch_src1_value;
 
-                next_entries[free_idx].src2_ready    = dispatch_src2_ready;
-                next_entries[free_idx].src2_tag      = dispatch_src2_tag;
-                next_entries[free_idx].src2_value    = dispatch_src2_value;
+                next_entries[free_idx].src2_ready       = dispatch_src2_ready;
+                next_entries[free_idx].src2_val_present = dispatch_src2_ready;
+                next_entries[free_idx].src2_tag         = dispatch_src2_tag;
+                next_entries[free_idx].src2_value       = dispatch_src2_value;
 
-                next_entries[free_idx].branch_funct3 = dispatch_branch_funct3;
-                next_entries[free_idx].branch_target = dispatch_branch_target;
-                next_entries[free_idx].branch_NPC    = dispatch_branch_NPC;
+                next_entries[free_idx].branch_funct3    = dispatch_branch_funct3;
+                next_entries[free_idx].branch_target    = dispatch_branch_target;
+                next_entries[free_idx].branch_NPC       = dispatch_branch_NPC;
             end
         end
     end

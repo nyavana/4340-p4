@@ -49,6 +49,10 @@ module lsq_test;
     logic [TAG_W-1:0]  cdb_tag;
     logic [XLEN-1:0]   cdb_value;
 
+    // Early-tag sideband
+    logic              early_cdb_valid;
+    logic [TAG_W-1:0]  early_cdb_tag;
+
     // store_ready sideband
     logic              store_ready_valid;
     logic [TAG_W-1:0]  store_ready_tag;
@@ -111,6 +115,9 @@ module lsq_test;
         .cdb_valid           (cdb_valid),
         .cdb_tag             (cdb_tag),
         .cdb_value           (cdb_value),
+
+        .early_cdb_valid     (early_cdb_valid),
+        .early_cdb_tag       (early_cdb_tag),
 
         .store_ready_valid   (store_ready_valid),
         .store_ready_tag     (store_ready_tag),
@@ -204,6 +211,8 @@ module lsq_test;
             cdb_valid           = 1'b0;
             cdb_tag             = '0;
             cdb_value           = '0;
+            early_cdb_valid     = 1'b0;
+            early_cdb_tag       = '0;
             rob_commit_valid    = 1'b0;
             rob_commit_tag      = '0;
             stub_mode              = 1'b0;
@@ -721,6 +730,104 @@ module lsq_test;
     endtask
 
     // ----------------------------------------------------------------
+    // Early-tag wakeup test
+    //
+    // Dispatch a load whose base is pending (tag T).  Pulse
+    // early_cdb_valid with tag T on cycle N.  By cycle N+1 the LSQ
+    // entry's base_ready bit must have flipped (ETB does not latch a
+    // value).  Drive the real CDB with the same tag on cycle N+1; the
+    // AGU then computes the address and the load issues to the dcache
+    // stub on the same timeline as a CDB-only path with no regression.
+    // The observable win is that base_ready flipped one cycle earlier
+    // than the CDB-only path would have set it.
+    // ----------------------------------------------------------------
+    task automatic test_early_tag_wakes_base_before_cdb;
+        logic base_ready_after_etb;
+        logic base_val_present_after_etb;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: early tag wakes LSQ base one cycle before CDB ===", test_count);
+            do_reset();
+
+            // dispatch a load whose base is waiting on tag 7.
+            dispatch_valid      = 1'b1;
+            dispatch_is_store   = 1'b0;
+            dispatch_rob_tag    = 3'd0;
+            dispatch_mem_size   = 2'b10;
+            dispatch_is_signed  = 1'b0;
+            dispatch_base_ready = 1'b0;
+            dispatch_base_tag   = 3'd7;
+            dispatch_base_value = '0;
+            dispatch_data_ready = 1'b1;
+            dispatch_data_value = '0;
+            dispatch_imm        = 32'h20;
+            @(posedge clock);
+            #1;
+            dispatch_valid = 1'b0;
+
+            // Before ETB, the head entry should still have base_ready=0.
+`ifndef SYNTH
+            if (dut.entries[dut.head].base_ready !== 1'b0) begin
+                $display("ERROR: pre-ETB head base_ready was not 0");
+                error_count = error_count + 1;
+            end
+            if (dcache_load !== 1'b0) begin
+                $display("ERROR: dcache_load asserted before base operand available");
+                error_count = error_count + 1;
+            end
+`endif
+
+            // Cycle N: early-tag pulse.
+            early_cdb_valid = 1'b1;
+            early_cdb_tag   = 3'd7;
+            @(posedge clock);
+            #1;
+            early_cdb_valid = 1'b0;
+
+            // Cycle N+1: base_ready must have flipped, val_present still 0.
+`ifndef SYNTH
+            base_ready_after_etb        = dut.entries[dut.head].base_ready;
+            base_val_present_after_etb  = dut.entries[dut.head].base_val_present;
+            if (base_ready_after_etb !== 1'b1) begin
+                $display("ERROR: base_ready did not flip on ETB (got %b, expected 1)",
+                         base_ready_after_etb);
+                error_count = error_count + 1;
+            end
+            if (base_val_present_after_etb !== 1'b0) begin
+                $display("ERROR: base_val_present flipped on ETB alone (got %b, expected 0)",
+                         base_val_present_after_etb);
+                error_count = error_count + 1;
+            end
+`endif
+
+            // Now drive the real CDB with value V; the AGU will latch
+            // base_value and addr_valid in next_entries this cycle, and
+            // the dcache_load request goes out next cycle.
+            cdb_valid = 1'b1;
+            cdb_tag   = 3'd7;
+            cdb_value = 32'h0000_0100;
+            @(posedge clock);
+            #1;
+            cdb_valid = 1'b0;
+
+`ifndef SYNTH
+            if (dut.entries[dut.head].base_val_present !== 1'b1) begin
+                $display("ERROR: base_val_present did not flip on CDB cycle");
+                error_count = error_count + 1;
+            end
+`endif
+
+            // addr = 0x100 + 0x20 = 0x120.  Dcache stub auto-hits.
+            check_eq("dcache_load after ETB+CDB", dcache_load, 1'b1);
+            check_eq32("dcache_addr after ETB+CDB", dcache_addr, 32'h0000_0120);
+
+            idle();
+            // Drain the load broadcast.
+            idle();
+        end
+    endtask
+
+    // ----------------------------------------------------------------
     // Main
     // ----------------------------------------------------------------
     initial begin
@@ -738,6 +845,7 @@ module lsq_test;
         test_flush_during_store_miss_done();
         test_flush_during_store_hit();
         test_two_back_to_back_stale_responses();
+        test_early_tag_wakes_base_before_cdb();
 
         if (error_count == 0)
             $display("\n@@@ Passed");
