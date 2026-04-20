@@ -37,10 +37,11 @@
 
 `define LSQ_SZ 8
 
-// D-cache geometry: 32 lines x 64 bits = 256 bytes, the cap from the project
-// spec. The cache is direct-mapped, write-back, write-allocate; see
-// verilog/dcache.sv for the state machine.
+// D-cache geometry: 32 total lines x 64 bits = 256 bytes, the cap from the
+// project spec. The current cache keeps that capacity while splitting the
+// lines into 16 sets of 2 ways each.
 `define DCACHE_LINES 32
+`define DCACHE_WAYS  2
 
 // functional units (you should decide if you want more or fewer types of FUs)
 `define NUM_FU_ALU 1
