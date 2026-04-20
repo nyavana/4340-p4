@@ -13,6 +13,10 @@
 //   7. From 11, two not-takens -> 01 and prediction flips to not-taken
 //   8. Tag-alias collision -> same index, different tag => miss
 //   9. Write-then-read sanity: update on cycle N posedge is visible on N+1
+//   10. RAS push/pop: single call-return predicts link PC even on BTB miss
+//   11. RAS nesting: push x3, pop x3 -> LIFO order
+//   12. RAS empty: predict_is_return with count=0 falls back to BTB
+//   13. RAS wrap: more pushes than RAS_ENTRIES -> SP wraps, count saturates
 //
 // Conforms to the `.pass` grep convention:
 //   prints "@@@ Passed" on success or "@@@ Incorrect" on any failure.
@@ -22,6 +26,7 @@ module branch_predictor_test;
     localparam XLEN        = `XLEN;
     localparam BTB_ENTRIES = `BTB_ENTRIES;
     localparam BHT_ENTRIES = `BHT_ENTRIES;
+    localparam RAS_ENTRIES = `RAS_ENTRIES;
     localparam BTB_IDX_W   = $clog2(BTB_ENTRIES);
     localparam BHT_IDX_W   = $clog2(BHT_ENTRIES);
 
@@ -33,6 +38,11 @@ module branch_predictor_test;
     logic              pred_taken;
     logic [XLEN-1:0]   pred_target;
     logic              pred_is_uncond;
+
+    logic              predict_is_return;
+    logic [XLEN-1:0]   predict_link_pc;
+    logic              ras_push_en;
+    logic              ras_pop_en;
 
     logic              update_valid;
     logic [XLEN-1:0]   update_PC;
@@ -51,6 +61,10 @@ module branch_predictor_test;
         .pred_taken       (pred_taken),
         .pred_target      (pred_target),
         .pred_is_uncond   (pred_is_uncond),
+        .predict_is_return (predict_is_return),
+        .predict_link_pc   (predict_link_pc),
+        .ras_push_en       (ras_push_en),
+        .ras_pop_en        (ras_pop_en),
         .update_valid     (update_valid),
         .update_PC        (update_PC),
         .update_target    (update_target),
@@ -68,12 +82,16 @@ module branch_predictor_test;
 
     task automatic clear_inputs;
         begin
-            predict_PC       = '0;
-            update_valid     = 1'b0;
-            update_PC        = '0;
-            update_target    = '0;
-            update_taken     = 1'b0;
-            update_is_uncond = 1'b0;
+            predict_PC        = '0;
+            predict_is_return = 1'b0;
+            predict_link_pc   = '0;
+            ras_push_en       = 1'b0;
+            ras_pop_en        = 1'b0;
+            update_valid      = 1'b0;
+            update_PC         = '0;
+            update_target     = '0;
+            update_taken      = 1'b0;
+            update_is_uncond  = 1'b0;
         end
     endtask
 
@@ -331,6 +349,165 @@ module branch_predictor_test;
         end
     endtask
 
+    // --- RAS helpers --------------------------------------------------
+
+    // Drive one push over a posedge.  `link` is the return address
+    // that would be stored by a JAL / call.  ras_push_en is registered
+    // on the next posedge and state becomes visible afterward.
+    task automatic ras_push;
+        input logic [XLEN-1:0] link;
+        begin
+            predict_link_pc = link;
+            ras_push_en     = 1'b1;
+            ras_pop_en      = 1'b0;
+            @(posedge clock);
+            #1;
+            ras_push_en     = 1'b0;
+            predict_link_pc = '0;
+        end
+    endtask
+
+    // Drive one pop over a posedge.
+    task automatic ras_pop;
+        begin
+            ras_push_en = 1'b0;
+            ras_pop_en  = 1'b1;
+            @(posedge clock);
+            #1;
+            ras_pop_en  = 1'b0;
+        end
+    endtask
+
+    // Sample the return prediction at `ret_pc` with `predict_is_return`
+    // asserted.  Does not cross a posedge so the stack is left alone.
+    task automatic do_predict_return;
+        input  logic [XLEN-1:0] ret_pc;
+        output logic            v;
+        output logic            t;
+        output logic [XLEN-1:0] tgt;
+        output logic            un;
+        begin
+            predict_PC        = ret_pc;
+            predict_is_return = 1'b1;
+            #1;
+            v   = pred_valid;
+            t   = pred_taken;
+            tgt = pred_target;
+            un  = pred_is_uncond;
+            predict_is_return = 1'b0;
+        end
+    endtask
+
+    // --- RAS tests ----------------------------------------------------
+
+    task automatic test_ras_single_call_return;
+        logic            v, t, un;
+        logic [XLEN-1:0] tgt;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: RAS single call-return ===", test_count);
+            do_reset();
+
+            // Simulate one call: link = PC+4 = 0x1004 is pushed.
+            ras_push(32'h0000_1004);
+
+            // On a return prediction the RAS top should drive the target
+            // even though no BTB entry exists for the JALR itself.
+            do_predict_return(32'h0000_2100, v, t, tgt, un);
+            check_eq("return hit via RAS", v, 1'b1);
+            check_eq("return taken via RAS", t, 1'b1);
+            check_eq("return is_uncond via RAS", un, 1'b1);
+            check_eq32("return target = link", tgt, 32'h0000_1004);
+        end
+    endtask
+
+    task automatic test_ras_nested_lifo;
+        logic            v, t, un;
+        logic [XLEN-1:0] tgt;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: RAS nested LIFO ===", test_count);
+            do_reset();
+
+            ras_push(32'hAAAA_0004);
+            ras_push(32'hBBBB_0004);
+            ras_push(32'hCCCC_0004);
+
+            do_predict_return(32'h0000_3000, v, t, tgt, un);
+            check_eq32("first return -> top (CCCC)", tgt, 32'hCCCC_0004);
+            ras_pop();
+
+            do_predict_return(32'h0000_3000, v, t, tgt, un);
+            check_eq32("second return -> BBBB", tgt, 32'hBBBB_0004);
+            ras_pop();
+
+            do_predict_return(32'h0000_3000, v, t, tgt, un);
+            check_eq32("third return -> AAAA", tgt, 32'hAAAA_0004);
+        end
+    endtask
+
+    task automatic test_ras_empty_fallback;
+        logic            v, t, un;
+        logic [XLEN-1:0] tgt;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: RAS empty falls back to BTB ===", test_count);
+            do_reset();
+
+            // No pushes have happened.  A return prediction must not be
+            // forced valid; it should reflect the (cold-miss) BTB path.
+            do_predict_return(32'h0000_4000, v, t, tgt, un);
+            check_eq("empty RAS -> pred_valid follows BTB (miss)", v, 1'b0);
+            check_eq("empty RAS -> pred_taken follows BTB (miss)", t, 1'b0);
+        end
+    endtask
+
+    task automatic test_ras_underflow_no_crash;
+        logic            v, t, un;
+        logic [XLEN-1:0] tgt;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: RAS underflow is a no-op ===", test_count);
+            do_reset();
+
+            // Pop on an empty stack a few times; none of these should
+            // perturb internal state or make the next return succeed.
+            ras_pop();
+            ras_pop();
+            ras_pop();
+
+            do_predict_return(32'h0000_5000, v, t, tgt, un);
+            check_eq("after underflow pops, RAS still empty", v, 1'b0);
+
+            // One push after the underflow: next return must still work.
+            ras_push(32'hDEAD_BEE4);
+            do_predict_return(32'h0000_5000, v, t, tgt, un);
+            check_eq("post-underflow push+pop path works", v, 1'b1);
+            check_eq32("post-underflow link", tgt, 32'hDEAD_BEE4);
+        end
+    endtask
+
+    task automatic test_ras_wrap;
+        logic            v, t, un;
+        logic [XLEN-1:0] tgt;
+        integer          k;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: RAS wrap on deeper-than-depth push ===", test_count);
+            do_reset();
+
+            // Push RAS_ENTRIES+1 distinct links.  The first link is
+            // overwritten by the wraparound; the most-recently-pushed
+            // link must still be the predicted return target.
+            for (k = 0; k <= RAS_ENTRIES; k = k + 1)
+                ras_push(32'hE000_0000 | (k[15:0] << 2));
+
+            do_predict_return(32'h0000_6000, v, t, tgt, un);
+            check_eq32("wrap: top = last push",
+                       tgt, 32'hE000_0000 | (RAS_ENTRIES[15:0] << 2));
+        end
+    endtask
+
     task automatic test_write_then_read_next_cycle;
         logic            v, t, un;
         logic [XLEN-1:0] tgt;
@@ -372,6 +549,11 @@ module branch_predictor_test;
         test_flip_from_11_to_01();
         test_tag_alias();
         test_write_then_read_next_cycle();
+        test_ras_single_call_return();
+        test_ras_nested_lifo();
+        test_ras_empty_fallback();
+        test_ras_underflow_no_crash();
+        test_ras_wrap();
 
         if (error_count == 0)
             $display("\n@@@ Passed");
