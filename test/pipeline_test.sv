@@ -303,6 +303,8 @@ module testbench;
                 endcase
                 $display("@@@\n@@");
                 show_clk_count;
+                $display("@@  prefetch_hits: %0d demand cycles served by stream buffer",
+                         core.sb_0.prefetch_hit_count);
                 // print_close(); // close the pipe_print output file
                 $fclose(wb_fileno);
                 #100 $finish;

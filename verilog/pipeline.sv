@@ -163,6 +163,18 @@ module pipeline (
     logic [3:0]       dcache_resp_in;
     logic [3:0]       icache_resp_in;
 
+    // Stream buffer (instruction prefetcher)
+    logic [1:0]       proc2Pmem_command;
+    logic [`XLEN-1:0] proc2Pmem_addr;
+    logic [63:0]      sb_data_out;
+    logic             sb_valid_out;
+    logic [3:0]       sb_resp_in;
+    integer           prefetch_hit_count;
+
+    // Unified fetch data/valid (icache or stream buffer)
+    logic [63:0]      fetch_data_out;
+    logic             fetch_valid_out;
+
     // Error status latch
     EXCEPTION_CODE error_status_reg;
 
@@ -170,12 +182,15 @@ module pipeline (
     // Combinational assignments
     // ================================================================
 
-    assign fetched_inst = PC_reg[2] ? Icache_data_out[63:32] : Icache_data_out[31:0];
+    assign fetch_data_out  = sb_valid_out ? sb_data_out : Icache_data_out;
+    assign fetch_valid_out = Icache_valid_out || sb_valid_out;
+
+    assign fetched_inst = PC_reg[2] ? fetch_data_out[63:32] : fetch_data_out[31:0];
     assign fetched_NPC  = PC_reg + 4;
 
     assign is_mem_op = dec_rd_mem || dec_wr_mem;
 
-    assign stall = !Icache_valid_out || rob_full || branch_pending ||
+    assign stall = !fetch_valid_out || rob_full || branch_pending ||
                    (is_mem_op ? lsq_full : rs_full);
     assign dispatch_fire = !stall;
 
@@ -218,21 +233,25 @@ module pipeline (
     // response on mem2proc_response was allocated for.  No additional
     // delay register is needed.
     // ----------------------------------------------------------------
+    // Three-level priority: dcache > icache (demand) > stream buffer (prefetch).
+    // The *_drives wires serve double duty: combinational bus mux this cycle,
+    // and response-routing mask sampled at the next posedge (inside each
+    // module's always_ff), giving "who drove last cycle" without an extra register.
     wire dcache_drives = (dc_proc2mem_command != BUS_NONE);
     wire icache_drives = !dcache_drives && (proc2Imem_command != BUS_NONE);
+    wire pfetch_drives = !dcache_drives && !icache_drives && (proc2Pmem_command != BUS_NONE);
 
     assign proc2mem_command = dcache_drives ? dc_proc2mem_command :
-                              icache_drives ? proc2Imem_command   : BUS_NONE;
-    assign proc2mem_addr    = dcache_drives ? dc_proc2mem_addr    : proc2Imem_addr;
+                              icache_drives ? proc2Imem_command   :
+                              pfetch_drives ? proc2Pmem_command   : BUS_NONE;
+    assign proc2mem_addr    = dcache_drives ? dc_proc2mem_addr    :
+                              icache_drives ? proc2Imem_addr      :
+                              pfetch_drives ? proc2Pmem_addr      : '0;
     assign proc2mem_data    = dcache_drives ? dc_proc2mem_data    : 64'b0;
 
-    // Mask each cache's view of mem2proc_response so it only sees
-    // responses for requests IT drove.  At the next posedge when the
-    // cache's always_ff samples the comb signals, icache_drives /
-    // dcache_drives reflect the PREVIOUS cycle's register state -
-    // exactly the cycle during which the response was allocated.
     assign icache_resp_in = icache_drives ? mem2proc_response : 4'b0;
     assign dcache_resp_in = dcache_drives ? mem2proc_response : 4'b0;
+    assign sb_resp_in     = pfetch_drives ? mem2proc_response : 4'b0;
 
     // Pipeline outputs
     assign pipeline_completed_insts = {3'b0, rob_commit_valid};
@@ -271,11 +290,28 @@ module pipeline (
     );
 
     // ================================================================
+    // Stream buffer (instruction prefetcher)
+    // ================================================================
+    stream_buffer sb_0 (
+        .clock              (clock),
+        .reset              (reset),
+        .mem2sb_response    (sb_resp_in),
+        .mem2proc_data      (mem2proc_data),
+        .mem2proc_tag       (mem2proc_tag),
+        .demand_addr        ({PC_reg[`XLEN-1:3], 3'b0}),
+        .proc2Pmem_command  (proc2Pmem_command),
+        .proc2Pmem_addr     (proc2Pmem_addr),
+        .sb_data_out        (sb_data_out),
+        .sb_valid_out       (sb_valid_out),
+        .prefetch_hit_count (prefetch_hit_count)
+    );
+
+    // ================================================================
     // Decoder
     // ================================================================
     decoder decoder_0 (
         .inst          (fetched_inst),
-        .valid         (Icache_valid_out),
+        .valid         (fetch_valid_out),
         .opa_select    (dec_opa_select),
         .opb_select    (dec_opb_select),
         .has_dest      (dec_has_dest),

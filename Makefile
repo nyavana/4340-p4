@@ -177,7 +177,7 @@ GREP = grep -E --color=auto
 # - with dependencies: 'rob.simv', 'rob.cov', and 'synth/rob.vg'
 
 # TODO: add more modules here
-TESTED_MODULES = mult rob rs dcache lsq
+TESTED_MODULES = mult rob rs dcache lsq icache
 
 MODULE = pipeline
 
@@ -202,6 +202,9 @@ $(call DEPS,rs): $(RS_DEPS)
 # the full pipeline).
 DCACHE_DEPS =
 $(call DEPS,dcache): $(DCACHE_DEPS)
+
+ICACHE_DEPS = verilog/stream_buffer.sv
+$(call DEPS,icache): $(ICACHE_DEPS)
 
 LSQ_DEPS =
 $(call DEPS,lsq): $(LSQ_DEPS)
@@ -343,6 +346,7 @@ SOURCES = verilog/pipeline.sv \
           verilog/rs.sv \
           verilog/regfile.sv \
           verilog/icache.sv \
+          verilog/stream_buffer.sv \
           verilog/dcache.sv \
           verilog/lsq.sv \
           verilog/mult.sv \

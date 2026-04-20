@@ -62,9 +62,6 @@ module rs #(
     logic                       issue_found;
     logic                       issue_fire;
 
-    logic [RS_SIZE-1:0] src1_ready_eff;
-    logic [RS_SIZE-1:0] src2_ready_eff;
-
     // 
 
     // find first free slot
@@ -83,22 +80,6 @@ module rs #(
 
     assign rs_full        = !free_found;
 
-    // effective ready: current ready OR woken up by this cycle's CDB
-    always_comb begin
-        integer i;
-        
-        for (i = 0; i < RS_SIZE; i++) begin
-            src1_ready_eff[i] = entries[i].src1_ready ||
-                                (cdb_valid && entries[i].busy &&
-                                 !entries[i].src1_ready &&
-                                 (entries[i].src1_tag == cdb_tag));
-
-            src2_ready_eff[i] = entries[i].src2_ready ||
-                                (cdb_valid && entries[i].busy &&
-                                 !entries[i].src2_ready &&
-                                 (entries[i].src2_tag == cdb_tag));
-        end
-    end
 
     // pick first ready entry to issue
     always_comb begin
