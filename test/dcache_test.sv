@@ -10,7 +10,8 @@
 //   4.  Sub-word stores (BYTE / HALF / WORD) update only the requested bytes
 //   5.  Two aliased addresses can co-exist in one set without thrashing
 //   6.  LRU updates on hit change which way gets evicted
-//   7.  Eviction of a dirty victim triggers a writeback to memory
+//   7.  Next-line prefetch turns an adjacent load into a later hit
+//   8.  Eviction of a dirty victim triggers a writeback to memory
 //
 // The testbench fakes a tiny version of mem.sv inline so we don't have to
 // pull in the real one.  Conforms to the `.pass` grep convention:
@@ -407,6 +408,13 @@ module dcache_test;
             do_load(32'h0080, r);
             check_eq64("load alias B", r, 64'h0202_0202_0202_0202);
 
+            // Let any miss-triggered background prefetch settle before
+            // checking whether the aliased reloads themselves miss.
+            repeat (4) begin
+                @(posedge clock);
+                #1;
+            end
+
             loads_before = mem_load_reqs;
             do_load(32'h0000, r);
             check_eq64("reload alias A", r, 64'h0101_0101_0101_0101);
@@ -440,6 +448,14 @@ module dcache_test;
             do_load(32'h2000, r);
             check_eq64("fill C evicts B", r, 64'h3333_3333_3333_3333);
 
+            // Same idea here: allow the miss-triggered next-line
+            // prefetch to finish so the counters only reflect the
+            // reloads under test.
+            repeat (4) begin
+                @(posedge clock);
+                #1;
+            end
+
             loads_before = mem_load_reqs;
             do_load(32'h0000, r);
             check_eq64("A should still be cached", r, 64'h1111_1111_1111_1111);
@@ -450,6 +466,33 @@ module dcache_test;
             check_eq64("B should have been evicted", r, 64'h2222_2222_2222_2222);
             check_eq_int("B reload misses after LRU eviction",
                          mem_load_reqs - loads_before, 1);
+        end
+    endtask
+
+    task automatic test_next_line_prefetch;
+        logic [63:0] r;
+        integer loads_before;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: next-line prefetch warms the adjacent line ===", test_count);
+            do_reset();
+            fake_mem[16'h0180 >> 3] = 64'h1111_AAAA_2222_BBBB;
+            fake_mem[16'h0188 >> 3] = 64'h3333_CCCC_4444_DDDD;
+
+            do_load(32'h0180, r);
+            check_eq64("first line demand load", r, 64'h1111_AAAA_2222_BBBB);
+
+            // Let the background prefetch request allocate and return.
+            repeat (4) begin
+                @(posedge clock);
+                #1;
+            end
+
+            loads_before = mem_load_reqs;
+            do_load(32'h0188, r);
+            check_eq64("adjacent line after prefetch", r, 64'h3333_CCCC_4444_DDDD);
+            check_eq_int("adjacent line should already be cached",
+                         mem_load_reqs - loads_before, 0);
         end
     endtask
 
@@ -470,6 +513,7 @@ module dcache_test;
         test_word_store();
         test_aliased_addresses_can_coexist();
         test_hit_updates_lru_replacement();
+        test_next_line_prefetch();
         test_dirty_eviction();
 
         if (error_count == 0)
