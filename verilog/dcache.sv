@@ -3,7 +3,8 @@
 //   Modulename :  dcache.sv                                           //
 //                                                                     //
 //  Description :  2-way set-associative, write-back, write-allocate   //
-//                 data cache. Total capacity stays 256 bytes:         //
+//                 data cache with a simple next-line prefetcher.      //
+//                 Total capacity stays 256 bytes:                     //
 //                 32 lines x 64 bits = 16 sets x 2 ways.              //
 //                                                                     //
 //                 Address layout:                                     //
@@ -15,6 +16,13 @@
 //                 is used first; otherwise the set's LRU way is the   //
 //                 eviction victim. On a hit or fill, the accessed way //
 //                 becomes MRU, so the LRU bit flips to the other way. //
+//                                                                     //
+//                 The prefetcher watches completed load accesses and   //
+//                 queues the next cache line (addr + 8 B) as a low-    //
+//                 priority background fetch. Prefetches are dropped    //
+//                 whenever they would hit an existing line, would      //
+//                 require evicting a dirty victim, or a demand access  //
+//                 arrives before the prefetch completes.               //
 //                                                                     //
 /////////////////////////////////////////////////////////////////////////
 
@@ -61,7 +69,9 @@ module dcache (
         DC_IDLE,
         DC_EVICT_REQ,
         DC_FETCH_REQ,
-        DC_FETCH_WAIT
+        DC_FETCH_WAIT,
+        DC_PREFETCH_REQ,
+        DC_PREFETCH_WAIT
     } dc_state_t;
 
     dc_state_t state, next_state;
@@ -79,6 +89,10 @@ module dcache (
     logic [63:0]       evict_data_reg;
     logic [`XLEN-1:0]  evict_addr_reg;
     logic              victim_way_reg;
+    logic              pf_pending_reg;
+    logic [`XLEN-1:0]  pf_addr_reg;
+    logic [3:0]        pf_mem_tag_reg;
+    logic              pf_way_reg;
 
     wire [`DCACHE_TAG_BITS-1:0] req_tag;
     wire [`DCACHE_SET_BITS-1:0] req_index;
@@ -94,9 +108,31 @@ module dcache (
     logic victim_dirty;
     logic [63:0] victim_data;
     logic [`DCACHE_TAG_BITS-1:0] victim_tag;
+    logic [`XLEN-1:0] prefetch_addr_next;
+    logic [`DCACHE_TAG_BITS-1:0] prefetch_tag_next;
+    logic [`DCACHE_SET_BITS-1:0] prefetch_index_next;
+    logic prefetch_hit_next;
+    logic prefetch_victim_way_next;
+    logic prefetch_victim_dirty_next;
+    logic [`DCACHE_TAG_BITS-1:0] pf_tag;
+    logic [`DCACHE_SET_BITS-1:0] pf_index;
+    logic pf_hit;
+    logic pf_victim_dirty;
+    logic pf_victim_way;
 
-    integer way_i;
+    wire demand_window = (state == DC_IDLE) ||
+                         (state == DC_PREFETCH_REQ) ||
+                         (state == DC_PREFETCH_WAIT);
+    wire demand_req  = demand_window && (proc_load || proc_store);
+    wire miss_done = (state == DC_FETCH_WAIT) &&
+                     (Dmem2proc_tag == mem_tag_reg) &&
+                     (mem_tag_reg != 4'b0);
+    wire pf_done   = (state == DC_PREFETCH_WAIT) &&
+                     (Dmem2proc_tag == pf_mem_tag_reg) &&
+                     (pf_mem_tag_reg != 4'b0);
+
     always_comb begin
+        integer way_i;
         hit         = 1'b0;
         hit_way     = 1'b0;
         victim_way  = lru_way[req_index];
@@ -124,17 +160,72 @@ module dcache (
         victim_tag   = dcache_data[req_index][victim_way].tags;
     end
 
-    wire idle_req  = (state == DC_IDLE) && (proc_load || proc_store);
-    wire miss_done = (state == DC_FETCH_WAIT) &&
-                     (Dmem2proc_tag == mem_tag_reg) &&
-                     (mem_tag_reg != 4'b0);
+    assign {prefetch_tag_next, prefetch_index_next} =
+        prefetch_addr_next[15:3];
+    assign {pf_tag, pf_index} = pf_addr_reg[15:3];
 
-    assign proc_done = (idle_req && hit) || miss_done;
-    assign proc_busy = (state != DC_IDLE);
+    always_comb begin
+        integer way_i;
+        prefetch_hit_next         = 1'b0;
+        prefetch_victim_way_next  = lru_way[prefetch_index_next];
+        prefetch_victim_dirty_next = 1'b0;
+        for (way_i = 0; way_i < `DCACHE_WAYS; way_i++) begin
+            if (dcache_data[prefetch_index_next][way_i].valid &&
+                (dcache_data[prefetch_index_next][way_i].tags == prefetch_tag_next)) begin
+                prefetch_hit_next = 1'b1;
+            end
+        end
+
+        if (!dcache_data[prefetch_index_next][0].valid) begin
+            prefetch_victim_way_next = 1'b0;
+        end else if (!dcache_data[prefetch_index_next][1].valid) begin
+            prefetch_victim_way_next = 1'b1;
+        end
+
+        prefetch_victim_dirty_next =
+            dcache_data[prefetch_index_next][prefetch_victim_way_next].valid &&
+            dcache_data[prefetch_index_next][prefetch_victim_way_next].dirty;
+    end
+
+    always_comb begin
+        integer way_i;
+        pf_hit         = 1'b0;
+        pf_victim_way  = lru_way[pf_index];
+        pf_victim_dirty = 1'b0;
+        for (way_i = 0; way_i < `DCACHE_WAYS; way_i++) begin
+            if (dcache_data[pf_index][way_i].valid &&
+                (dcache_data[pf_index][way_i].tags == pf_tag)) begin
+                pf_hit = 1'b1;
+            end
+        end
+
+        if (!dcache_data[pf_index][0].valid) begin
+            pf_victim_way = 1'b0;
+        end else if (!dcache_data[pf_index][1].valid) begin
+            pf_victim_way = 1'b1;
+        end
+
+        pf_victim_dirty =
+            dcache_data[pf_index][pf_victim_way].valid &&
+            dcache_data[pf_index][pf_victim_way].dirty;
+    end
+
+    assign proc_done = (demand_req && hit) || miss_done;
+    assign proc_busy = (state == DC_EVICT_REQ) ||
+                       (state == DC_FETCH_REQ) ||
+                       (state == DC_FETCH_WAIT);
+
+    always_comb begin
+        if (miss_done && req_load_reg) begin
+            prefetch_addr_next = {req_addr_reg[`XLEN-1:3] + 1'b1, 3'b0};
+        end else begin
+            prefetch_addr_next = {proc_addr[`XLEN-1:3] + 1'b1, 3'b0};
+        end
+    end
 
     always_comb begin
         proc_rd_data = '0;
-        if (idle_req && proc_load && hit) begin
+        if (demand_req && proc_load && hit) begin
             proc_rd_data = dcache_data[req_index][hit_way].data;
         end else if (miss_done && req_load_reg) begin
             proc_rd_data = Dmem2proc_data;
@@ -155,6 +246,10 @@ module dcache (
                 proc2Dmem_command = BUS_LOAD;
                 proc2Dmem_addr    = {req_addr_reg[`XLEN-1:3], 3'b0};
             end
+            DC_PREFETCH_REQ: begin
+                proc2Dmem_command = BUS_LOAD;
+                proc2Dmem_addr    = pf_addr_reg;
+            end
             default: ;
         endcase
     end
@@ -163,11 +258,13 @@ module dcache (
         next_state = state;
         case (state)
             DC_IDLE: begin
-                if (idle_req && !hit) begin
+                if (demand_req && !hit) begin
                     if (victim_dirty)
                         next_state = DC_EVICT_REQ;
                     else
                         next_state = DC_FETCH_REQ;
+                end else if (pf_pending_reg && !pf_hit && !pf_victim_dirty) begin
+                    next_state = DC_PREFETCH_REQ;
                 end
             end
             DC_EVICT_REQ: begin
@@ -181,6 +278,30 @@ module dcache (
             DC_FETCH_WAIT: begin
                 if (miss_done)
                     next_state = DC_IDLE;
+            end
+            DC_PREFETCH_REQ: begin
+                if (demand_req) begin
+                    if (hit)
+                        next_state = DC_IDLE;
+                    else if (victim_dirty)
+                        next_state = DC_EVICT_REQ;
+                    else
+                        next_state = DC_FETCH_REQ;
+                end else if (Dmem2proc_response != 4'b0) begin
+                    next_state = DC_PREFETCH_WAIT;
+                end
+            end
+            DC_PREFETCH_WAIT: begin
+                if (demand_req) begin
+                    if (hit)
+                        next_state = DC_IDLE;
+                    else if (victim_dirty)
+                        next_state = DC_EVICT_REQ;
+                    else
+                        next_state = DC_FETCH_REQ;
+                end else if (pf_done) begin
+                    next_state = DC_IDLE;
+                end
             end
             default: next_state = DC_IDLE;
         endcase
@@ -199,6 +320,10 @@ module dcache (
             evict_data_reg  <= '0;
             evict_addr_reg  <= '0;
             victim_way_reg  <= 1'b0;
+            pf_pending_reg  <= 1'b0;
+            pf_addr_reg     <= '0;
+            pf_mem_tag_reg  <= 4'b0;
+            pf_way_reg      <= 1'b0;
             for (set_i = 0; set_i < `DCACHE_SETS; set_i++) begin
                 lru_way[set_i] <= 1'b0;
                 for (way_j = 0; way_j < `DCACHE_WAYS; way_j++) begin
@@ -208,13 +333,18 @@ module dcache (
         end else begin
             state <= next_state;
 
-            if (state == DC_IDLE && idle_req && !hit) begin
+            if ((state == DC_IDLE ||
+                 state == DC_PREFETCH_REQ ||
+                 state == DC_PREFETCH_WAIT) &&
+                demand_req && !hit) begin
                 req_load_reg    <= proc_load;
                 req_store_reg   <= proc_store;
                 req_addr_reg    <= proc_addr;
                 req_wr_data_reg <= proc_wr_data;
                 req_wr_be_reg   <= proc_wr_be;
                 victim_way_reg  <= victim_way;
+                pf_pending_reg  <= 1'b0;
+                pf_mem_tag_reg  <= 4'b0;
 
                 if (victim_dirty) begin
                     evict_data_reg <= victim_data;
@@ -226,8 +356,10 @@ module dcache (
 
             if (state == DC_FETCH_REQ && Dmem2proc_response != 4'b0)
                 mem_tag_reg <= Dmem2proc_response;
+            if (state == DC_PREFETCH_REQ && Dmem2proc_response != 4'b0)
+                pf_mem_tag_reg <= Dmem2proc_response;
 
-            if (state == DC_IDLE && proc_store && hit) begin
+            if (demand_req && proc_store && hit) begin
                 for (b = 0; b < 8; b++) begin
                     if (proc_wr_be[b]) begin
                         dcache_data[req_index][hit_way].data[b*8 +: 8]
@@ -236,7 +368,9 @@ module dcache (
                 end
                 dcache_data[req_index][hit_way].dirty <= 1'b1;
                 lru_way[req_index] <= ~hit_way;
-            end else if (state == DC_IDLE && proc_load && hit) begin
+                pf_pending_reg <= 1'b0;
+                pf_mem_tag_reg <= 4'b0;
+            end else if (demand_req && proc_load && hit) begin
                 lru_way[req_index] <= ~hit_way;
             end
 
@@ -260,6 +394,29 @@ module dcache (
                 end
                 lru_way[reg_index] <= ~victim_way_reg;
                 mem_tag_reg <= 4'b0;
+                if (req_load_reg &&
+                    !prefetch_hit_next &&
+                    !prefetch_victim_dirty_next) begin
+                    pf_pending_reg <= 1'b1;
+                    pf_addr_reg    <= prefetch_addr_next;
+                    pf_way_reg     <= prefetch_victim_way_next;
+                end else begin
+                    pf_pending_reg <= 1'b0;
+                end
+            end
+
+            if (state == DC_IDLE && pf_pending_reg && (pf_hit || pf_victim_dirty)) begin
+                pf_pending_reg <= 1'b0;
+            end
+
+            if (pf_done && !demand_req) begin
+                dcache_data[pf_index][pf_way_reg].data  <= Dmem2proc_data;
+                dcache_data[pf_index][pf_way_reg].tags  <= pf_tag;
+                dcache_data[pf_index][pf_way_reg].valid <= 1'b1;
+                dcache_data[pf_index][pf_way_reg].dirty <= 1'b0;
+                lru_way[pf_index] <= ~pf_way_reg;
+                pf_pending_reg <= 1'b0;
+                pf_mem_tag_reg <= 4'b0;
             end
         end
     end
