@@ -333,6 +333,16 @@ module dcache (
         end else begin
             state <= next_state;
 
+            // Any demand access takes priority over background prefetch
+            // work. If a prefetch was queued or already in flight, cancel
+            // it so we do not keep re-issuing the same line or retain a
+            // stale memory tag after the core has moved on.
+            if ((state == DC_PREFETCH_REQ || state == DC_PREFETCH_WAIT) &&
+                demand_req) begin
+                pf_pending_reg <= 1'b0;
+                pf_mem_tag_reg <= 4'b0;
+            end
+
             if ((state == DC_IDLE ||
                  state == DC_PREFETCH_REQ ||
                  state == DC_PREFETCH_WAIT) &&
@@ -356,8 +366,13 @@ module dcache (
 
             if (state == DC_FETCH_REQ && Dmem2proc_response != 4'b0)
                 mem_tag_reg <= Dmem2proc_response;
-            if (state == DC_PREFETCH_REQ && Dmem2proc_response != 4'b0)
+            if (state == DC_PREFETCH_REQ && Dmem2proc_response != 4'b0) begin
+                // Once memory has accepted the prefetch, it is no longer a
+                // queued request. The live transaction is tracked by the
+                // state machine + pf_mem_tag_reg until pf_done (or cancel).
+                pf_pending_reg <= 1'b0;
                 pf_mem_tag_reg <= Dmem2proc_response;
+            end
 
             if (demand_req && proc_store && hit) begin
                 for (b = 0; b < 8; b++) begin
