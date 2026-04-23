@@ -100,6 +100,9 @@ module pipeline (
     logic [TAG_W-1:0] rs_issue_dest_tag;
     logic [`XLEN-1:0] rs_issue_src1_value;
     logic [`XLEN-1:0] rs_issue_src2_value;
+    logic [2:0]       rs_issue_branch_funct3;
+    logic [`XLEN-1:0] rs_issue_branch_target;
+    logic [`XLEN-1:0] rs_issue_branch_NPC;
 
     // Dispatch operand resolution
     logic             dispatch_src1_ready, dispatch_src2_ready;
@@ -116,16 +119,39 @@ module pipeline (
     // Issue routing
     logic issue_is_mult, issue_is_branch, issue_accept;
 
-    // Branch buffer
+    // Branch buffer (legacy shared latch path — kept only for the
+    // non-branch instruction flow.  Per-branch info now lives in the
+    // RS and ROB entries.)
     logic [`XLEN-1:0] branch_target_buf;
     logic [2:0]       branch_funct3_buf;
 
-    // MULT FU
+    // Dispatch-time branch target and funct3 that feed the RS per-entry
+    // fields.  Computed combinationally from the fetched instruction.
+    logic [`XLEN-1:0] dispatch_branch_target;
+    logic [2:0]       dispatch_branch_funct3;
+
+    // Predictor ports
+    logic             pred_valid;
+    logic             pred_taken;
+    logic [`XLEN-1:0] pred_target;
+    logic             pred_is_uncond;
+    // Commit-side mispredict
+    logic             mispredict_valid;
+    logic [`XLEN-1:0] mispredict_target;
+    logic             rob_commit_is_uncond_branch;
+    logic [`XLEN-1:0] rob_commit_branch_PC;
+
+    // MULT FU.  mult_flushed marks an in-flight mult whose ROB slot was
+    // invalidated by a mispredict; when the stages finally complete we
+    // suppress the CDB broadcast so we don't write into a re-allocated
+    // entry.
     logic             mult_busy, mult_done;
+    logic             mult_flushed;
     logic [TAG_W-1:0] mult_dest_tag_reg;
     ALU_FUNC          mult_alu_func_reg;
     logic [63:0]      mult_product;
     logic [63:0]      mult_mcand, mult_mplier;
+    logic             mult_done_valid; // mult_done && !mult_flushed
 
     // ALU
     logic [`XLEN-1:0] alu_result;
@@ -194,6 +220,20 @@ module pipeline (
                    (is_mem_op ? lsq_full : rs_full);
     assign dispatch_fire = !stall;
 
+    // Compute the branch target and funct3 at dispatch for the RS entry.
+    // For conditional branches, target = PC + Bimm; for unconditional
+    // JAL, target = PC + Jimm (JALR computes in the ALU from rs1 and is
+    // not latched here -- the RS-carried branch_target is unused for JALR
+    // because its CDB broadcast comes from alu_result).  funct3 only
+    // matters for conditional branches.
+    always_comb begin
+        dispatch_branch_funct3 = fetched_inst.b.funct3;
+        if (dec_uncond_branch)
+            dispatch_branch_target = PC_reg + `RV32_signext_Jimm(fetched_inst);
+        else
+            dispatch_branch_target = PC_reg + `RV32_signext_Bimm(fetched_inst);
+    end
+
     // op[7]=rd_mem, op[6]=uncond_branch, op[5]=cond_branch, op[4:0]=alu_func
     assign dispatch_op   = {dec_rd_mem, dec_uncond_branch, dec_cond_branch, dec_alu_func};
 
@@ -214,7 +254,7 @@ module pipeline (
     assign issue_is_branch = rs_issue_op[5] | rs_issue_op[6];
     assign issue_accept    = rs_issue_valid &&
                              (issue_is_mult ? !mult_busy
-                                            : !mult_done && !lsq_load_complete_valid);
+                                            : !mult_done_valid && !lsq_load_complete_valid);
 
     assign alu_signed_a = rs_issue_src1_value;
     assign alu_signed_b = rs_issue_src2_value;
@@ -263,14 +303,24 @@ module pipeline (
 
     // ================================================================
     // PC register
+    //
+    // Priority:
+    //   1. mispredict_valid: redirect to correct target, flush everything
+    //   2. dispatch_fire && pred_valid && pred_taken: follow the predictor
+    //   3. dispatch_fire: PC + 4
+    //   4. stall: hold
     // ================================================================
     always_ff @(posedge clock) begin
         if (reset)
             PC_reg <= '0;
-        else if (rob_commit_valid && rob_commit_take_branch)
-            PC_reg <= rob_commit_branch_target;
-        else if (!stall)
-            PC_reg <= PC_reg + 4;
+        else if (mispredict_valid)
+            PC_reg <= mispredict_target;
+        else if (dispatch_fire) begin
+            if (pred_valid && pred_taken)
+                PC_reg <= pred_target;
+            else
+                PC_reg <= PC_reg + 4;
+        end
     end
 
     // ================================================================
@@ -304,6 +354,45 @@ module pipeline (
         .sb_data_out        (sb_data_out),
         .sb_valid_out       (sb_valid_out),
         .prefetch_hit_count (prefetch_hit_count)
+    );
+
+    // ================================================================
+    // Branch predictor (BTB + bimodal)
+    //
+    // Predict port: combinational lookup on the current fetch PC.
+    // Update port: registered, one-per-committing-branch write driven
+    // by the ROB's commit-side branch info.
+    // ================================================================
+    logic             pred_valid_raw;
+    logic             pred_taken_raw;
+    logic [`XLEN-1:0] pred_target_raw;
+    logic             pred_is_uncond_raw;
+`ifdef DISABLE_PREDICTOR
+    assign pred_valid     = 1'b0;
+    assign pred_taken     = 1'b0;
+    assign pred_target    = '0;
+    assign pred_is_uncond = 1'b0;
+`else
+    assign pred_valid     = pred_valid_raw;
+    assign pred_taken     = pred_taken_raw;
+    assign pred_target    = pred_target_raw;
+    assign pred_is_uncond = pred_is_uncond_raw;
+`endif
+    branch_predictor branch_predictor_0 (
+        .clock            (clock),
+        .reset            (reset),
+
+        .predict_PC       (PC_reg),
+        .pred_valid       (pred_valid_raw),
+        .pred_taken       (pred_taken_raw),
+        .pred_target      (pred_target_raw),
+        .pred_is_uncond   (pred_is_uncond_raw),
+
+        .update_valid     (rob_commit_valid && rob_commit_is_branch),
+        .update_PC        (rob_commit_branch_PC),
+        .update_target    (rob_commit_branch_target),
+        .update_taken     (rob_commit_take_branch),
+        .update_is_uncond (rob_commit_is_uncond_branch)
     );
 
     // ================================================================
@@ -425,15 +514,23 @@ module pipeline (
     rob rob_0 (
         .clock                (clock),
         .reset                (reset),
-        .flush                (1'b0),
+        .flush                (mispredict_valid),
 
         .dispatch_valid       (dispatch_fire),
         .dispatch_dest_reg    (dec_has_dest ? fetched_inst.r.rd : 5'd0),
         .dispatch_NPC         (fetched_NPC),
+        .dispatch_PC          (PC_reg),
         .dispatch_halt        (dec_halt),
         .dispatch_illegal     (dec_illegal),
         .dispatch_is_branch   (dec_cond_branch || dec_uncond_branch),
+        .dispatch_is_uncond_branch (dec_uncond_branch),
         .dispatch_is_store    (dec_wr_mem),
+
+        // Only branches carry a real prediction; non-branches dispatch with
+        // predicted_taken=0, predicted_target=0 so the commit-time
+        // mispredict check is a no-op for them.
+        .dispatch_predicted_taken  ((dec_cond_branch || dec_uncond_branch) && pred_valid && pred_taken),
+        .dispatch_predicted_target ((dec_cond_branch || dec_uncond_branch) ? pred_target : 32'b0),
 
         .rob_full             (rob_full),
         .dispatch_tag         (rob_dispatch_tag),
@@ -458,6 +555,11 @@ module pipeline (
         .commit_is_branch     (rob_commit_is_branch),
         .commit_take_branch   (rob_commit_take_branch),
         .commit_branch_target (rob_commit_branch_target),
+        .commit_is_uncond_branch (rob_commit_is_uncond_branch),
+        .commit_branch_PC     (rob_commit_branch_PC),
+
+        .mispredict_valid     (mispredict_valid),
+        .mispredict_target    (mispredict_target),
 
         .query1_arch_reg      (fetched_inst.r.rs1),
         .query1_pending       (rat_q1_pending),
@@ -478,7 +580,7 @@ module pipeline (
     rs rs_0 (
         .clock               (clock),
         .reset               (reset),
-        .flush               (1'b0),
+        .flush               (mispredict_valid),
 
         .dispatch_valid      (dispatch_fire && !is_mem_op),
         .dispatch_op         (dispatch_op),
@@ -492,6 +594,10 @@ module pipeline (
         .dispatch_src2_tag   (dispatch_src2_tag),
         .dispatch_src2_value (dispatch_src2_value),
 
+        .dispatch_branch_funct3 (dispatch_branch_funct3),
+        .dispatch_branch_target (dispatch_branch_target),
+        .dispatch_branch_NPC    (fetched_NPC),
+
         .rs_full             (rs_full),
 
         .cdb_valid           (cdb_valid),
@@ -503,7 +609,10 @@ module pipeline (
         .issue_op            (rs_issue_op),
         .issue_dest_tag      (rs_issue_dest_tag),
         .issue_src1_value    (rs_issue_src1_value),
-        .issue_src2_value    (rs_issue_src2_value)
+        .issue_src2_value    (rs_issue_src2_value),
+        .issue_branch_funct3 (rs_issue_branch_funct3),
+        .issue_branch_target (rs_issue_branch_target),
+        .issue_branch_NPC    (rs_issue_branch_NPC)
     );
 
     // ================================================================
@@ -512,7 +621,7 @@ module pipeline (
     lsq lsq_0 (
         .clock               (clock),
         .reset               (reset),
-        .flush               (1'b0),
+        .flush               (mispredict_valid),
 
         .dispatch_valid      (dispatch_fire && is_mem_op),
         .dispatch_is_store   (dec_wr_mem),
@@ -529,6 +638,7 @@ module pipeline (
         .dispatch_data_value (dispatch_data_value),
 
         .dispatch_imm        (dispatch_imm),
+        .dispatch_dbg_pc     (PC_reg),
 
         .lsq_full            (lsq_full),
 
@@ -548,6 +658,7 @@ module pipeline (
         .dcache_wr_data      (lsq_dcache_wr_data),
         .dcache_wr_be        (lsq_dcache_wr_be),
         .dcache_done         (dcache_done),
+        .dcache_busy         (dcache_busy),
         .dcache_rd_data      (dcache_rd_data),
 
         .load_complete_valid (lsq_load_complete_valid),
@@ -558,8 +669,9 @@ module pipeline (
 
     // The LSQ load broadcast is accepted whenever no MULT result is on
     // the CDB this cycle.  When MULT wins arbitration the LSQ holds the
-    // value in its per-entry buffer and re-asserts next cycle.
-    assign lsq_load_complete_accept = lsq_load_complete_valid && !mult_done;
+    // value in its per-entry buffer and re-asserts next cycle.  A
+    // flushed (poisoned) mult is not blocked on, so the LSQ can still win.
+    assign lsq_load_complete_accept = lsq_load_complete_valid && !mult_done_valid;
 
     // ================================================================
     // D-Cache
@@ -588,26 +700,37 @@ module pipeline (
     );
 
     // ================================================================
-    // Branch info buffer
+    // Branch info buffer (legacy, retained for follow-up removal)
+    //
+    // branch_pending is now tied to 0: the branch predictor lets fetch
+    // continue past unresolved branches, and mispredict recovery runs at
+    // commit through the ROB sideband.  Per-branch target / funct3 info
+    // now lives inside the RS entry (see rs.sv branch_* fields), so the
+    // shared latches are unused -- they are kept for one commit so a
+    // follow-up diff can delete them cleanly.
     // ================================================================
+`ifdef SERIALIZE_BRANCHES
+    // Diagnostic: milestone-3-style branch serialization.  Kept
+    // behind an ifdef so `make simulate_all` keeps using the
+    // speculative path.  Used to capture "golden" writeback streams
+    // for wb-diff root-causing.
+    logic branch_pending_reg;
     always_ff @(posedge clock) begin
-        if (reset) begin
-            branch_pending    <= 1'b0;
-            branch_target_buf <= '0;
-            branch_funct3_buf <= '0;
-        end else begin
-            if (dispatch_fire && (dec_cond_branch || dec_uncond_branch)) begin
-                branch_pending    <= 1'b1;
-                branch_funct3_buf <= fetched_inst.b.funct3;
-                if (dec_uncond_branch)
-                    branch_target_buf <= PC_reg + `RV32_signext_Jimm(fetched_inst);
-                else
-                    branch_target_buf <= PC_reg + `RV32_signext_Bimm(fetched_inst);
-            end
-            if (rob_commit_valid && rob_commit_is_branch)
-                branch_pending <= 1'b0;
-        end
+        if (reset)
+            branch_pending_reg <= 1'b0;
+        else if (mispredict_valid)
+            branch_pending_reg <= 1'b0;
+        else if (rob_commit_valid && rob_commit_is_branch)
+            branch_pending_reg <= 1'b0;
+        else if (dispatch_fire && (dec_cond_branch || dec_uncond_branch))
+            branch_pending_reg <= 1'b1;
     end
+    assign branch_pending    = branch_pending_reg;
+`else
+    assign branch_pending    = 1'b0;
+`endif
+    assign branch_target_buf = '0;
+    assign branch_funct3_buf = '0;
 
     // ================================================================
     // MULT functional unit
@@ -646,18 +769,30 @@ module pipeline (
     always_ff @(posedge clock) begin
         if (reset) begin
             mult_busy         <= 1'b0;
+            mult_flushed      <= 1'b0;
             mult_dest_tag_reg <= '0;
             mult_alu_func_reg <= ALU_ADD;
         end else begin
-            if (mult_done)
-                mult_busy <= 1'b0;
+            if (mult_done) begin
+                mult_busy    <= 1'b0;
+                mult_flushed <= 1'b0;
+            end
+            // Mispredict: any mult currently churning is targeting a ROB
+            // slot that is about to be cleared / re-allocated.  Mark its
+            // output as poisoned so we drop it when it eventually reports
+            // done.
+            if (mispredict_valid && mult_busy && !mult_done)
+                mult_flushed <= 1'b1;
             if (issue_accept && issue_is_mult) begin
                 mult_busy         <= 1'b1;
+                mult_flushed      <= 1'b0;
                 mult_dest_tag_reg <= rs_issue_dest_tag;
                 mult_alu_func_reg <= ALU_FUNC'(rs_issue_op[4:0]);
             end
         end
     end
+
+    assign mult_done_valid = mult_done && !mult_flushed;
 
     // ================================================================
     // ALU (single-cycle, inline)
@@ -678,9 +813,9 @@ module pipeline (
         endcase
     end
 
-    // Conditional branch outcome
+    // Conditional branch outcome (funct3 now travels with the RS entry)
     always_comb begin
-        case (branch_funct3_buf)
+        case (rs_issue_branch_funct3)
             3'b000: branch_take = (rs_issue_src1_value == rs_issue_src2_value); // BEQ
             3'b001: branch_take = (rs_issue_src1_value != rs_issue_src2_value); // BNE
             3'b100: branch_take = (br_signed_a < br_signed_b);                  // BLT
@@ -707,7 +842,7 @@ module pipeline (
         cdb_take_branch   = 1'b0;
         cdb_branch_target = '0;
 
-        if (mult_done) begin
+        if (mult_done_valid) begin
             cdb_valid = 1'b1;
             cdb_tag   = mult_dest_tag_reg;
             case (mult_alu_func_reg)
@@ -727,15 +862,20 @@ module pipeline (
             if (rs_issue_op[6]) begin          // uncond branch (JAL/JALR)
                 // The ALU computes the target for both JAL (PC + J_imm)
                 // and JALR (rs1 + I_imm).  Clearing bit 0 is a no-op
-                // for JAL and matches the JALR spec.  The return-address
-                // write-back (NPC) is generated by the ROB on commit.
-                cdb_value         = '0;
+                // for JAL and matches the JALR spec.  The CDB value is the
+                // return address (NPC) so that any CDB-bypass consumer
+                // (RS/LSQ wakeup, RAT query bypass) sees the correct link
+                // register value instead of 0.  The ROB's commit-value
+                // override (entries[head].NPC) becomes redundant but is
+                // left in place so correctness is not double-dependent on
+                // this CDB fix.
+                cdb_value         = rs_issue_branch_NPC;
                 cdb_take_branch   = 1'b1;
                 cdb_branch_target = {alu_result[`XLEN-1:1], 1'b0};
             end else if (rs_issue_op[5]) begin // cond branch
                 cdb_value         = '0;
                 cdb_take_branch   = branch_take;
-                cdb_branch_target = branch_target_buf;
+                cdb_branch_target = rs_issue_branch_target;
             end else begin                     // regular ALU
                 cdb_value         = alu_result;
                 cdb_take_branch   = 1'b0;

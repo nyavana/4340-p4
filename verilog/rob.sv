@@ -13,10 +13,17 @@ module rob #(
     input  logic             dispatch_valid,
     input  logic [4:0]       dispatch_dest_reg,  // architectural dest register (ZERO_REG if no writeback)
     input  logic [XLEN-1:0]  dispatch_NPC,
+    input  logic [XLEN-1:0]  dispatch_PC,        // PC of the dispatched instruction (used for branch predictor update)
     input  logic             dispatch_halt,
     input  logic             dispatch_illegal,
     input  logic             dispatch_is_branch,
+    input  logic             dispatch_is_uncond_branch,
     input  logic             dispatch_is_store,  // milestone 3: store ops sit in the LSQ until commit
+
+    // Branch prediction carried through the pipeline.  Non-branches leave
+    // these at 0 and the commit-time mispredict check ignores them.
+    input  logic             dispatch_predicted_taken,
+    input  logic [XLEN-1:0]  dispatch_predicted_target,
 
     output logic             rob_full,
     output logic [TAG_W-1:0] dispatch_tag,       // ROB index assigned to new entry (= current tail)
@@ -47,6 +54,15 @@ module rob #(
     output logic             commit_is_branch,
     output logic             commit_take_branch,
     output logic [XLEN-1:0]  commit_branch_target,
+    output logic             commit_is_uncond_branch, // needed by predictor update
+    output logic [XLEN-1:0]  commit_branch_PC,        // PC of the committing branch
+
+    // Mispredict sideband.  Pulses for exactly one cycle when a committing
+    // branch disagrees with its prediction; drives pipeline flush + PC
+    // redirect.  Also asserts on correctly-predicted taken branches whose
+    // stored BTB target has decayed to the wrong value.
+    output logic             mispredict_valid,
+    output logic [XLEN-1:0]  mispredict_target,
 
     // ---- RAT queries: 2 source registers per dispatched instruction ----
     // If pending=1 and ready=1: value is available in ROB now
@@ -80,6 +96,13 @@ module rob #(
         logic            is_branch;
         logic            take_branch;
         logic [XLEN-1:0] branch_target;
+        // Prediction carried from the fetch-time BRANCH_PRED_PACKET so that
+        // commit can compare predicted vs. actual and drive the mispredict
+        // sideband.  Non-branch entries leave these at 0.
+        logic            predicted_taken;
+        logic [XLEN-1:0] predicted_target;
+        logic            is_uncond_branch; // remembered so the predictor knows JAL vs. Bxx
+        logic [XLEN-1:0] branch_PC;        // committing PC, needed for BTB/BHT update
     } rob_entry_t;
 
     rob_entry_t entries      [ROB_SIZE-1:0];
@@ -123,9 +146,25 @@ module rob #(
     assign commit_NPC           = entries[head].NPC;
     assign commit_halt          = entries[head].halt;
     assign commit_illegal       = entries[head].illegal;
-    assign commit_is_branch     = entries[head].is_branch;
-    assign commit_take_branch   = entries[head].take_branch;
-    assign commit_branch_target = entries[head].branch_target;
+    assign commit_is_branch        = entries[head].is_branch;
+    assign commit_take_branch      = entries[head].take_branch;
+    assign commit_branch_target    = entries[head].branch_target;
+    assign commit_is_uncond_branch = entries[head].is_uncond_branch;
+    assign commit_branch_PC        = entries[head].branch_PC;
+
+    // Commit-time mispredict detection.
+    //   * direction miss: predicted != actual
+    //   * target miss:    actual taken but BTB target != resolved target
+    // For a not-taken actual outcome the correct next PC is NPC (= PC + 4).
+    logic mispredict_int;
+    assign mispredict_int = commit_valid && entries[head].is_branch &&
+                            ((entries[head].predicted_taken ^ entries[head].take_branch) ||
+                             (entries[head].take_branch &&
+                              (entries[head].predicted_target != entries[head].branch_target)));
+    assign mispredict_valid  = mispredict_int;
+    assign mispredict_target = entries[head].take_branch
+                               ? entries[head].branch_target
+                               : entries[head].NPC;
 
     // -------------------------------------------------------
     // RAT query logic (with same-cycle CDB bypass)
@@ -229,17 +268,21 @@ module rob #(
 
             // 3) Dispatch: allocate tail (guard against full this cycle)
             if (dispatch_valid && !rob_full) begin
-                next_entries[tail].busy          = 1'b1;
-                next_entries[tail].ready         = 1'b0;
-                next_entries[tail].is_store      = dispatch_is_store;
-                next_entries[tail].dest_reg      = dispatch_dest_reg;
-                next_entries[tail].NPC           = dispatch_NPC;
-                next_entries[tail].halt          = dispatch_halt;
-                next_entries[tail].illegal       = dispatch_illegal;
-                next_entries[tail].is_branch     = dispatch_is_branch;
-                next_entries[tail].take_branch   = 1'b0;
-                next_entries[tail].value         = '0;
-                next_entries[tail].branch_target = '0;
+                next_entries[tail].busy             = 1'b1;
+                next_entries[tail].ready            = 1'b0;
+                next_entries[tail].is_store         = dispatch_is_store;
+                next_entries[tail].dest_reg         = dispatch_dest_reg;
+                next_entries[tail].NPC              = dispatch_NPC;
+                next_entries[tail].halt             = dispatch_halt;
+                next_entries[tail].illegal          = dispatch_illegal;
+                next_entries[tail].is_branch        = dispatch_is_branch;
+                next_entries[tail].is_uncond_branch = dispatch_is_uncond_branch;
+                next_entries[tail].branch_PC        = dispatch_PC;
+                next_entries[tail].take_branch      = 1'b0;
+                next_entries[tail].value            = '0;
+                next_entries[tail].branch_target    = '0;
+                next_entries[tail].predicted_taken  = dispatch_predicted_taken;
+                next_entries[tail].predicted_target = dispatch_predicted_target;
                 next_tail  = (tail == TAG_W'(ROB_SIZE - 1)) ? '0 : tail + 1'b1;
                 next_count = next_count + 1'b1;
                 // Update RAT (never track x0)

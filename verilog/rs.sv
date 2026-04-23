@@ -23,6 +23,19 @@ module rs #(
     input  logic [TAG_W-1:0]      dispatch_src2_tag,
     input  logic [XLEN-1:0]       dispatch_src2_value,
 
+    // Per-entry branch metadata carried through the RS.  Non-branches
+    // leave these at 0; the compare / CDB logic gates them on op[5|6].
+    // Previously branch_target_buf and branch_funct3_buf lived as shared
+    // latches in pipeline.sv; moving them in-RS lets multiple branches be
+    // in flight simultaneously.
+    //
+    // branch_NPC is the return address for JAL/JALR (= dispatch PC + 4).
+    // The CDB broadcasts this as cdb_value for uncond branches so any
+    // downstream CDB-bypass consumer sees the correct link register value.
+    input  logic [2:0]            dispatch_branch_funct3,
+    input  logic [XLEN-1:0]       dispatch_branch_target,
+    input  logic [XLEN-1:0]       dispatch_branch_NPC,
+
     output logic                  rs_full, // if rs is full
 
     // common data bus wakeup
@@ -36,7 +49,10 @@ module rs #(
     output logic [OP_W-1:0]       issue_op, // opcode
     output logic [TAG_W-1:0]      issue_dest_tag, // destination tag
     output logic [XLEN-1:0]       issue_src1_value, // source 1 value
-    output logic [XLEN-1:0]       issue_src2_value // source 2 value
+    output logic [XLEN-1:0]       issue_src2_value, // source 2 value
+    output logic [2:0]            issue_branch_funct3,
+    output logic [XLEN-1:0]       issue_branch_target,
+    output logic [XLEN-1:0]       issue_branch_NPC
 );
 
     typedef struct packed {
@@ -51,6 +67,10 @@ module rs #(
         logic                 src2_ready;
         logic [TAG_W-1:0]     src2_tag;
         logic [XLEN-1:0]      src2_value;
+
+        logic [2:0]           branch_funct3;
+        logic [XLEN-1:0]      branch_target;
+        logic [XLEN-1:0]      branch_NPC;
     } rs_entry_t;
 
     rs_entry_t entries [RS_SIZE-1:0];
@@ -102,14 +122,20 @@ module rs #(
     assign issue_fire  = issue_valid && issue_accept;
 
     always_comb begin
-        issue_op         = '0;
-        issue_dest_tag   = '0;
-        issue_src1_value = '0;
-        issue_src2_value = '0;
+        issue_op            = '0;
+        issue_dest_tag      = '0;
+        issue_src1_value    = '0;
+        issue_src2_value    = '0;
+        issue_branch_funct3 = '0;
+        issue_branch_target = '0;
+        issue_branch_NPC    = '0;
 
         if (issue_found) begin
-            issue_op       = entries[issue_idx].op;
-            issue_dest_tag = entries[issue_idx].dest_tag;
+            issue_op            = entries[issue_idx].op;
+            issue_dest_tag      = entries[issue_idx].dest_tag;
+            issue_branch_funct3 = entries[issue_idx].branch_funct3;
+            issue_branch_target = entries[issue_idx].branch_target;
+            issue_branch_NPC    = entries[issue_idx].branch_NPC;
 
             issue_src1_value = (cdb_valid &&
                                 entries[issue_idx].busy &&
@@ -161,17 +187,21 @@ module rs #(
 
             // insert new dispatched entry
             if (dispatch_valid && free_found) begin
-                next_entries[free_idx].busy       = 1'b1;
-                next_entries[free_idx].op         = dispatch_op;
-                next_entries[free_idx].dest_tag   = dispatch_dest_tag;
+                next_entries[free_idx].busy          = 1'b1;
+                next_entries[free_idx].op            = dispatch_op;
+                next_entries[free_idx].dest_tag      = dispatch_dest_tag;
 
-                next_entries[free_idx].src1_ready = dispatch_src1_ready;
-                next_entries[free_idx].src1_tag   = dispatch_src1_tag;
-                next_entries[free_idx].src1_value = dispatch_src1_value;
+                next_entries[free_idx].src1_ready    = dispatch_src1_ready;
+                next_entries[free_idx].src1_tag      = dispatch_src1_tag;
+                next_entries[free_idx].src1_value    = dispatch_src1_value;
 
-                next_entries[free_idx].src2_ready = dispatch_src2_ready;
-                next_entries[free_idx].src2_tag   = dispatch_src2_tag;
-                next_entries[free_idx].src2_value = dispatch_src2_value;
+                next_entries[free_idx].src2_ready    = dispatch_src2_ready;
+                next_entries[free_idx].src2_tag      = dispatch_src2_tag;
+                next_entries[free_idx].src2_value    = dispatch_src2_value;
+
+                next_entries[free_idx].branch_funct3 = dispatch_branch_funct3;
+                next_entries[free_idx].branch_target = dispatch_branch_target;
+                next_entries[free_idx].branch_NPC    = dispatch_branch_NPC;
             end
         end
     end

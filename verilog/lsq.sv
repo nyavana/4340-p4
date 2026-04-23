@@ -60,6 +60,7 @@ module lsq #(
     input  logic [XLEN-1:0]   dispatch_data_value,
 
     input  logic [XLEN-1:0]   dispatch_imm, // already sign-extended
+    input  logic [XLEN-1:0]   dispatch_dbg_pc, // debug-only: PC of the memory op
 
     output logic              lsq_full,
 
@@ -83,6 +84,13 @@ module lsq #(
     output logic [63:0]       dcache_wr_data,
     output logic [7:0]        dcache_wr_be,
     input  logic              dcache_done,
+    input  logic              dcache_busy,    // dcache.proc_busy: 1 while
+                                              // servicing a miss.  Used by
+                                              // the flush path to tell "this
+                                              // load is actively in the
+                                              // cache pipeline" apart from
+                                              // "LSQ asserted dcache_load
+                                              // but the cache was busy".
     input  logic [63:0]       dcache_rd_data,
 
     // ---- Load completion (broadcast on CDB by pipeline.sv) ----
@@ -118,6 +126,7 @@ module lsq #(
         logic              in_flight;        // request handed to D-cache, waiting on done
         logic              load_buf_valid;   // load: data is buffered, waiting for CDB accept
         logic [XLEN-1:0]   load_buf_value;   // sub-word-extracted load result
+        logic [XLEN-1:0]   dbg_pc;           // debug-only: PC of the memory op (unused in logic)
     } lsq_entry_t;
 
     lsq_entry_t entries      [LSQ_SIZE-1:0];
@@ -126,6 +135,19 @@ module lsq #(
     logic [IDX_W-1:0] head, tail;
     logic [IDX_W-1:0] next_head, next_tail;
     logic [IDX_W:0]   count, next_count;
+
+    // When a mispredict flushes an in-flight load, the D-cache keeps
+    // servicing its latched request and will eventually assert
+    // dcache_done for data that no LSQ entry owns.  This counter
+    // (width IDX_W+1, so it can hold up to LSQ_SIZE) tracks how many
+    // stale dcache_done pulses are still outstanding so a later head
+    // load is not falsely latched with somebody else's data.  A
+    // counter (rather than a single bit) covers the case of two
+    // flushes landing inside the same miss window -- rare in the
+    // one-outstanding-miss D-cache today, but cheap to do right and
+    // removes a correctness hazard for any future multi-miss cache.
+    logic [IDX_W:0]   stale_response_count;
+    logic [IDX_W:0]   next_stale_response_count;
 
     assign lsq_full = (count == LSQ_SIZE[IDX_W:0]);
 
@@ -260,6 +282,8 @@ module lsq #(
     // -------------------------------------------------------
     integer i;
     logic [IDX_W:0] dec_count;
+    logic [IDX_W:0] flush_new_count;
+    logic [IDX_W-1:0] flush_scan_idx;
 
     always_comb begin
         for (i = 0; i < LSQ_SIZE; i++)
@@ -267,13 +291,83 @@ module lsq #(
         next_head  = head;
         next_tail  = tail;
         next_count = count;
+        flush_new_count = '0;
+        flush_scan_idx  = head;
+        next_stale_response_count = stale_response_count;
 
         if (flush) begin
-            for (i = 0; i < LSQ_SIZE; i++)
-                next_entries[i] = '0;
-            next_head  = '0;
-            next_tail  = '0;
-            next_count = '0;
+            // Remember that a stale D-cache response is in flight if we
+            // just dropped the load that owned it.  A committed store
+            // being preserved across flush does NOT bump the counter --
+            // that response still belongs to a valid LSQ entry.
+            //
+            // Edge case A: if dcache_done is already asserted on the
+            // flush cycle AND the flushed head was an in-flight load,
+            // the response is for that load and has already arrived.
+            // We ignore it (the else branch never runs on flush cycles),
+            // so the counter should NOT be bumped -- otherwise the NEXT
+            // real response would be swallowed by mistake.
+            //
+            // Edge case B: the head is a brand-new releasable load and
+            // the cache is IDLE this cycle.  The cache will accept the
+            // request combinationally (state_IDLE && proc_load && !hit)
+            // and commit to a fetch at the next posedge.  The LSQ has
+            // not yet latched in_flight=1 (that happens next cycle).
+            // When flush hits on this same cycle, the cache is still
+            // going to fetch the dropped load's address -- its eventual
+            // dcache_done is stale and must be swallowed.  Without this
+            // arm, sort_search hung because the orphaned fetch's data
+            // (belonging to the flushed load's address) was latched as
+            // if it were the new head's load result.
+            if (entries[head].busy && !entries[head].is_store && !dcache_done &&
+                (entries[head].in_flight ||
+                 (head_load_releasable && !dcache_busy)))
+                next_stale_response_count = stale_response_count + 1'b1;
+            // On branch mispredict the LSQ must drop every speculative
+            // entry younger than the mispredicting branch, but it MUST
+            // preserve any already-committed store sitting at the head
+            // waiting to drain to the D-cache.  Commits are in order, so
+            // committed stores form a contiguous run starting at head.
+            for (i = 0; i < LSQ_SIZE; i++) begin
+                if (!entries[i].is_store || !entries[i].committed)
+                    next_entries[i] = '0;
+            end
+            // Walk from head forward; the new tail sits at the first slot
+            // whose retained entry is non-busy.  A contiguous-run flag
+            // (instead of `break`) keeps this friendly to all simulators.
+            begin : flush_scan
+                logic still_contig;
+                still_contig = 1'b1;
+                for (i = 0; i < LSQ_SIZE; i++) begin
+                    flush_scan_idx = IDX_W'((head + i) % LSQ_SIZE);
+                    if (still_contig) begin
+                        if (next_entries[flush_scan_idx].busy)
+                            flush_new_count = flush_new_count + 1'b1;
+                        else
+                            still_contig = 1'b0;
+                    end
+                end
+            end
+            next_head  = head;
+            next_tail  = IDX_W'((head + flush_new_count) % LSQ_SIZE);
+            next_count = flush_new_count;
+
+            // Flush + dcache_done race on a committed head store.
+            // The D-cache's done pulse this cycle is the store's own
+            // completion -- architectural memory has already been
+            // written.  If we left the store queued, the LSQ would
+            // re-issue dcache_store next cycle and either double-write
+            // (hit path) or lock up waiting for a second done that
+            // never comes (miss path already consumed the bus handshake).
+            // Pop the head on this cycle so the preserved store sees
+            // its own done exactly once.
+            if (flush_new_count > 0 &&
+                entries[head].busy && entries[head].is_store &&
+                entries[head].committed && dcache_done) begin
+                next_entries[head] = '0;
+                next_head  = (head == IDX_W'(LSQ_SIZE-1)) ? '0 : head + 1'b1;
+                next_count = next_count - 1'b1;
+            end
         end else begin
             // 1) CDB wakeup
             for (i = 0; i < LSQ_SIZE; i++) begin
@@ -324,7 +418,10 @@ module lsq #(
             //   - !in_flight && releasable && !done: mark in_flight.
             //
             dec_count = next_count;
-            if (entries[head].busy && head_is_load) begin
+            if (stale_response_count != '0 && dcache_done) begin
+                // Swallow a stale response -- don't let anyone latch it.
+                next_stale_response_count = stale_response_count - 1'b1;
+            end else if (entries[head].busy && head_is_load) begin
                 if (entries[head].load_buf_valid) begin
                     if (load_complete_accept) begin
                         next_entries[head] = '0;
@@ -335,7 +432,15 @@ module lsq #(
                     next_entries[head].load_buf_valid = 1'b1;
                     next_entries[head].load_buf_value = load_value_extracted;
                     next_entries[head].in_flight      = 1'b0;
-                end else if (head_load_releasable && !entries[head].in_flight) begin
+                end else if (head_load_releasable && !entries[head].in_flight &&
+                             !dcache_busy) begin
+                    // Only latch in_flight when the cache is actually
+                    // IDLE (and therefore accepting our request this
+                    // cycle).  If dcache_busy=1 then the cache is still
+                    // on a previous fetch -- marking in_flight here would
+                    // falsely claim ownership of somebody else's
+                    // outstanding response and, on back-to-back flushes,
+                    // would over-count stale responses in the counter.
                     next_entries[head].in_flight = 1'b1;
                 end
             end else if (entries[head].busy && head_is_store) begin
@@ -363,6 +468,7 @@ module lsq #(
                 next_entries[tail].mem_size   = dispatch_mem_size;
                 next_entries[tail].is_signed  = dispatch_is_signed;
                 next_entries[tail].imm        = dispatch_imm;
+                next_entries[tail].dbg_pc     = dispatch_dbg_pc;
 
                 next_entries[tail].base_ready = dispatch_base_ready;
                 next_entries[tail].base_tag   = dispatch_base_tag;
@@ -395,12 +501,14 @@ module lsq #(
             head  <= '0;
             tail  <= '0;
             count <= '0;
+            stale_response_count <= '0;
         end else begin
             for (j = 0; j < LSQ_SIZE; j++)
                 entries[j] <= next_entries[j];
             head  <= next_head;
             tail  <= next_tail;
             count <= next_count;
+            stale_response_count <= next_stale_response_count;
         end
     end
 

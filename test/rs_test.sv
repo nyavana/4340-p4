@@ -25,6 +25,10 @@ module rs_test;
   logic [TAG_W-1:0]     dispatch_src2_tag;
   logic [XLEN-1:0]      dispatch_src2_value;
 
+  logic [2:0]           dispatch_branch_funct3;
+  logic [XLEN-1:0]      dispatch_branch_target;
+  logic [XLEN-1:0]      dispatch_branch_NPC;
+
   logic                 rs_full;
 
   // cdb
@@ -39,6 +43,9 @@ module rs_test;
   logic [TAG_W-1:0]     issue_dest_tag;
   logic [XLEN-1:0]      issue_src1_value;
   logic [XLEN-1:0]      issue_src2_value;
+  logic [2:0]           issue_branch_funct3;
+  logic [XLEN-1:0]      issue_branch_target;
+  logic [XLEN-1:0]      issue_branch_NPC;
 
   integer error_count;
   integer test_count;
@@ -60,6 +67,10 @@ module rs_test;
     .dispatch_src2_tag(dispatch_src2_tag),
     .dispatch_src2_value(dispatch_src2_value),
 
+    .dispatch_branch_funct3(dispatch_branch_funct3),
+    .dispatch_branch_target(dispatch_branch_target),
+    .dispatch_branch_NPC   (dispatch_branch_NPC),
+
     .rs_full(rs_full),
 
     .cdb_valid(cdb_valid),
@@ -71,7 +82,10 @@ module rs_test;
     .issue_op(issue_op),
     .issue_dest_tag(issue_dest_tag),
     .issue_src1_value(issue_src1_value),
-    .issue_src2_value(issue_src2_value)
+    .issue_src2_value(issue_src2_value),
+    .issue_branch_funct3(issue_branch_funct3),
+    .issue_branch_target(issue_branch_target),
+    .issue_branch_NPC   (issue_branch_NPC)
   );
 
   // ============================================================
@@ -98,6 +112,10 @@ module rs_test;
       dispatch_src2_ready = 1'b0;
       dispatch_src2_tag   = '0;
       dispatch_src2_value = '0;
+
+      dispatch_branch_funct3 = 3'b0;
+      dispatch_branch_target = '0;
+      dispatch_branch_NPC    = '0;
 
       cdb_valid           = 1'b0;
       cdb_tag             = '0;
@@ -276,7 +294,7 @@ module rs_test;
   task automatic test_dependency_wakeup_then_issue;
     begin
       test_count = test_count + 1;
-      $display("\n=== Test %0d: dependency wakeup then issue ===", test_count);
+      $display("\n=== Test %0d: dependency wakeup then issue (wakeup-then-select) ===", test_count);
 
       do_reset();
 
@@ -297,12 +315,21 @@ module rs_test;
 
       expect_no_issue();
 
+      // The RS selector reads the REGISTERED `entries[i].src1_ready`
+      // (see doc/rs-issue-loop-fix.md), so the CDB wake-up takes one
+      // cycle to latch before the selector can fire.  On the CDB cycle
+      // itself, issue_valid stays 0; on the following cycle it goes
+      // high with the woken-up operand value.
       drive_cdb(3'd5, 32'hAAAA_5555);
       #1;
+      expect_no_issue();
+
+      @(posedge clock);
+      #1;
+      stop_cdb();
       expect_issue(8'h22, 3'd2, 32'hAAAA_5555, 32'h33);
 
       accept_issue_one_cycle();
-      stop_cdb();
       expect_no_issue();
     end
   endtask
@@ -310,7 +337,7 @@ module rs_test;
   task automatic test_same_cycle_cdb_bypass_issue;
     begin
       test_count = test_count + 1;
-      $display("\n=== Test %0d: same-cycle CDB bypass into issue ===", test_count);
+      $display("\n=== Test %0d: CDB value captured on wake, used on next-cycle issue ===", test_count);
 
       do_reset();
 
@@ -331,15 +358,24 @@ module rs_test;
 
       expect_no_issue();
 
-      // This cycle the CDB wakes it up.
-      // issue_valid should become 1 combinationally,
-      // and the issued src1 value should bypass directly from cdb_value.
+      // CDB pulse on this cycle; the entry snoops it and latches
+      // src1_ready=1, src1_value=cdb_value at the next posedge.  The
+      // selector then fires on the following cycle with the latched
+      // value.  Pre-fix, the RS selector also combinationally
+      // bypassed through `src*_ready_eff`, which closed a
+      // combinational loop with the CDB arbiter; that bypass is gone
+      // and the "same-cycle" name in this test now just means "issue
+      // fires as early as the registered wake-up allows".
       drive_cdb(3'd6, 32'hDEAD_BEEF);
       #1;
+      expect_no_issue();
+
+      @(posedge clock);
+      #1;
+      stop_cdb();
       expect_issue(8'h33, 3'd3, 32'hDEAD_BEEF, 32'h44);
 
       accept_issue_one_cycle();
-      stop_cdb();
       expect_no_issue();
     end
   endtask

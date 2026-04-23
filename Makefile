@@ -177,7 +177,7 @@ GREP = grep -E --color=auto
 # - with dependencies: 'rob.simv', 'rob.cov', and 'synth/rob.vg'
 
 # TODO: add more modules here
-TESTED_MODULES = mult rob rs dcache lsq icache
+TESTED_MODULES = mult rob rs dcache lsq icache branch_predictor
 
 MODULE = pipeline
 
@@ -209,6 +209,12 @@ $(call DEPS,icache): $(ICACHE_DEPS)
 LSQ_DEPS =
 $(call DEPS,lsq): $(LSQ_DEPS)
 
+# Branch predictor: BTB + bimodal direction predictor.  Standalone module;
+# its unit test stubs the predict / update ports directly and does not need
+# any other SV sources pulled in.
+BRANCH_PREDICTOR_DEPS =
+$(call DEPS,branch_predictor): $(BRANCH_PREDICTOR_DEPS)
+
 # This allows you to use the following make targets:
 # make <module>.pass   <- greps for "@@@ Passed" or "@@@ Incorrect" in the output
 # make <module>.out    <- run the testbench (via <module>.simv)
@@ -238,8 +244,27 @@ $(call DEPS,lsq): $(LSQ_DEPS)
 # ---- Running ---- #
 
 # run compiled executables ('make %.out' is linked to 'make output/%.out' further below)
-# using this syntax avoids overlapping with the 'make <my_program>.out' targets
-$(TESTED_MODULES:%=output/%.out) $(TESTED_MODULES:%=output/%.syn.out): output/%.out: %.simv | output
+# using this syntax avoids overlapping with the 'make <my_program>.out' targets.
+#
+# `mult` is excluded from this generic rule because the project also
+# ships a `mult.mem` program, and its `output/mult.out` recipe (defined
+# further below) would otherwise collide with the testbench recipe
+# here.  The `mult` testbench instead writes to `output/mult_tb.out`
+# via the explicit rule below and is grep'd by the `mult.pass` /
+# `mult.syn.pass` overrides.
+TB_ONLY_MODULES = $(filter-out mult,$(TESTED_MODULES))
+$(TB_ONLY_MODULES:%=output/%.out) $(TB_ONLY_MODULES:%=output/%.syn.out): output/%.out: %.simv | output
+	@$(call PRINT_COLOR, 5, running $<)
+	./$< | tee $@
+	@$(call PRINT_COLOR, 2, output is in $@)
+
+# mult testbench outputs, kept on a distinct path to avoid clashing
+# with the `mult.mem` program's `output/mult.out`.
+output/mult_tb.out: mult.simv | output
+	@$(call PRINT_COLOR, 5, running $<)
+	./$< | tee $@
+	@$(call PRINT_COLOR, 2, output is in $@)
+output/mult_tb.syn.out: mult.syn.simv | output
 	@$(call PRINT_COLOR, 5, running $<)
 	./$< | tee $@
 	@$(call PRINT_COLOR, 2, output is in $@)
@@ -249,6 +274,17 @@ $(TESTED_MODULES:%=output/%.out) $(TESTED_MODULES:%=output/%.syn.out): output/%.
 	@GREP_COLOR="01;31" $(GREP) -i '@@@ ?Incorrect' $< || \
 	GREP_COLOR="01;32" $(GREP) -i '@@@ ?Passed' $<
 .PHONY: %.pass
+
+# Explicit .pass overrides for the mult testbench (see `TB_ONLY_MODULES`
+# above).  `make mult.out` still runs the program; `make mult.pass`
+# runs the testbench.
+mult.pass: output/mult_tb.out
+	@GREP_COLOR="01;31" $(GREP) -i '@@@ ?Incorrect' $< || \
+	GREP_COLOR="01;32" $(GREP) -i '@@@ ?Passed' $<
+mult.syn.pass: output/mult_tb.syn.out
+	@GREP_COLOR="01;31" $(GREP) -i '@@@ ?Incorrect' $< || \
+	GREP_COLOR="01;32" $(GREP) -i '@@@ ?Passed' $<
+.PHONY: mult.pass mult.syn.pass
 
 # run many types of things in verdi
 %.verdi: %.simv
@@ -351,6 +387,7 @@ SOURCES = verilog/pipeline.sv \
           verilog/lsq.sv \
           verilog/mult.sv \
           verilog/mult_stage.sv \
+          verilog/branch_predictor.sv \
 
 SYNTH_FILES = synth/pipeline.vg
 
