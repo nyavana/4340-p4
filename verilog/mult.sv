@@ -16,8 +16,21 @@ module mult (
     input start,
 
     output [63:0] product,
-    output done
+    output done,
+    // Pulses one cycle before `done` to drive the early-tag sideband used
+    // by the RS/LSQ wakeup path.  Tapped off the second-to-last stage's
+    // `done`, which is itself a flop — safe to drive combinationally out
+    // of this module.  Requires MULT_STAGES >= 2.
+    output logic early_done
 );
+
+    // Synth/sim-time guard: MULT_STAGES == 1 collapses internal_dones to a
+    // zero-width vector, which would make early_done meaningless.
+    initial begin
+        if (`MULT_STAGES < 2)
+            $fatal(1, "mult.sv: MULT_STAGES must be >= 2 (got %0d) for early_done tap",
+                   `MULT_STAGES);
+    end
 
     logic [`MULT_STAGES-2:0] internal_dones;
     logic [(64*(`MULT_STAGES-1))-1:0] internal_product_sums, internal_mcands, internal_mpliers;
@@ -37,5 +50,9 @@ module mult (
         .next_mcand  ({mcand_out,  internal_mcands}),
         .done        ({done,       internal_dones}) // done when the final stage is done
     );
+
+    // Second-to-last stage's `done` flop — rises one cycle before the
+    // final `done` of the chain.
+    assign early_done = internal_dones[`MULT_STAGES-2];
 
 endmodule

@@ -32,6 +32,10 @@ module rs #(
     input  logic [TAG_W-1:0]      cdb_tag [2],
     input  logic [XLEN-1:0]       cdb_value [2],
 
+    // Early-tag sideband (wakeup-only, from mult FU)
+    input  logic                  early_cdb_valid,
+    input  logic [TAG_W-1:0]      early_cdb_tag,
+
     // dual issue
     input  logic [1:0]            issue_accept,
     output logic [1:0]            issue_valid,
@@ -49,9 +53,11 @@ module rs #(
         logic [OP_W-1:0]      op;
         logic [TAG_W-1:0]     dest_tag;
         logic                 src1_ready;
+        logic                 src1_val_present;
         logic [TAG_W-1:0]     src1_tag;
         logic [XLEN-1:0]      src1_value;
         logic                 src2_ready;
+        logic                 src2_val_present;
         logic [TAG_W-1:0]     src2_tag;
         logic [XLEN-1:0]      src2_value;
         logic [2:0]           branch_funct3;
@@ -115,6 +121,8 @@ module rs #(
         for (g = 0; g < 2; g++) begin : GEN_ISSUE_OUT
             wire [$clog2(RS_SIZE)-1:0] idx = (g == 0) ? issue_idx0 : issue_idx1;
             always_comb begin
+                integer k;
+                logic [`XLEN-1:0] fwd_val1, fwd_val2;
                 issue_op[g]            = '0;
                 issue_dest_tag[g]      = '0;
                 issue_src1_value[g]    = '0;
@@ -128,8 +136,18 @@ module rs #(
                     issue_branch_funct3[g] = entries[idx].branch_funct3;
                     issue_branch_target[g] = entries[idx].branch_target;
                     issue_branch_NPC[g]    = entries[idx].branch_NPC;
-                    issue_src1_value[g]    = entries[idx].src1_value;
-                    issue_src2_value[g]    = entries[idx].src2_value;
+                    // ETB val-present forwarding: if value not yet latched,
+                    // forward from whichever CDB slot carries the matching tag.
+                    fwd_val1 = entries[idx].src1_value;
+                    fwd_val2 = entries[idx].src2_value;
+                    for (k = 0; k < 2; k++) begin
+                        if (cdb_valid[k] && cdb_tag[k] == entries[idx].src1_tag)
+                            fwd_val1 = cdb_value[k];
+                        if (cdb_valid[k] && cdb_tag[k] == entries[idx].src2_tag)
+                            fwd_val2 = cdb_value[k];
+                    end
+                    issue_src1_value[g] = entries[idx].src1_val_present ? entries[idx].src1_value : fwd_val1;
+                    issue_src2_value[g] = entries[idx].src2_val_present ? entries[idx].src2_value : fwd_val2;
                 end
             end
         end
@@ -149,15 +167,26 @@ module rs #(
             for (i = 0; i < RS_SIZE; i++) begin
                 if (entries[i].busy) begin
                     for (k = 0; k < 2; k++) begin
-                        if (cdb_valid[k] && !next_entries[i].src1_ready && (next_entries[i].src1_tag == cdb_tag[k])) begin
-                            next_entries[i].src1_ready = 1'b1;
-                            next_entries[i].src1_value = cdb_value[k];
+                        if (cdb_valid[k] && !next_entries[i].src1_val_present &&
+                            (next_entries[i].src1_tag == cdb_tag[k])) begin
+                            next_entries[i].src1_ready       = 1'b1;
+                            next_entries[i].src1_val_present = 1'b1;
+                            next_entries[i].src1_value       = cdb_value[k];
                         end
-                        if (cdb_valid[k] && !next_entries[i].src2_ready && (next_entries[i].src2_tag == cdb_tag[k])) begin
-                            next_entries[i].src2_ready = 1'b1;
-                            next_entries[i].src2_value = cdb_value[k];
+                        if (cdb_valid[k] && !next_entries[i].src2_val_present &&
+                            (next_entries[i].src2_tag == cdb_tag[k])) begin
+                            next_entries[i].src2_ready       = 1'b1;
+                            next_entries[i].src2_val_present = 1'b1;
+                            next_entries[i].src2_value       = cdb_value[k];
                         end
                     end
+                    // Early-tag wakeup: flip src*_ready only (val_present stays 0)
+                    if (early_cdb_valid && !next_entries[i].src1_ready &&
+                        (next_entries[i].src1_tag == early_cdb_tag))
+                        next_entries[i].src1_ready = 1'b1;
+                    if (early_cdb_valid && !next_entries[i].src2_ready &&
+                        (next_entries[i].src2_tag == early_cdb_tag))
+                        next_entries[i].src2_ready = 1'b1;
                 end
             end
 
@@ -171,33 +200,37 @@ module rs #(
             end
 
             if (dispatch_valid[0] && free_found0) begin
-                next_entries[free_idx0].busy          = 1'b1;
-                next_entries[free_idx0].op            = dispatch_op[0];
-                next_entries[free_idx0].dest_tag      = dispatch_dest_tag[0];
-                next_entries[free_idx0].src1_ready    = dispatch_src1_ready[0];
-                next_entries[free_idx0].src1_tag      = dispatch_src1_tag[0];
-                next_entries[free_idx0].src1_value    = dispatch_src1_value[0];
-                next_entries[free_idx0].src2_ready    = dispatch_src2_ready[0];
-                next_entries[free_idx0].src2_tag      = dispatch_src2_tag[0];
-                next_entries[free_idx0].src2_value    = dispatch_src2_value[0];
-                next_entries[free_idx0].branch_funct3 = dispatch_branch_funct3[0];
-                next_entries[free_idx0].branch_target = dispatch_branch_target[0];
-                next_entries[free_idx0].branch_NPC    = dispatch_branch_NPC[0];
+                next_entries[free_idx0].busy              = 1'b1;
+                next_entries[free_idx0].op                = dispatch_op[0];
+                next_entries[free_idx0].dest_tag          = dispatch_dest_tag[0];
+                next_entries[free_idx0].src1_ready        = dispatch_src1_ready[0];
+                next_entries[free_idx0].src1_val_present  = dispatch_src1_ready[0];
+                next_entries[free_idx0].src1_tag          = dispatch_src1_tag[0];
+                next_entries[free_idx0].src1_value        = dispatch_src1_value[0];
+                next_entries[free_idx0].src2_ready        = dispatch_src2_ready[0];
+                next_entries[free_idx0].src2_val_present  = dispatch_src2_ready[0];
+                next_entries[free_idx0].src2_tag          = dispatch_src2_tag[0];
+                next_entries[free_idx0].src2_value        = dispatch_src2_value[0];
+                next_entries[free_idx0].branch_funct3     = dispatch_branch_funct3[0];
+                next_entries[free_idx0].branch_target     = dispatch_branch_target[0];
+                next_entries[free_idx0].branch_NPC        = dispatch_branch_NPC[0];
                 taken[free_idx0] = 1'b1;
             end
             if (dispatch_valid[1] && free_found1) begin
-                next_entries[free_idx1].busy          = 1'b1;
-                next_entries[free_idx1].op            = dispatch_op[1];
-                next_entries[free_idx1].dest_tag      = dispatch_dest_tag[1];
-                next_entries[free_idx1].src1_ready    = dispatch_src1_ready[1];
-                next_entries[free_idx1].src1_tag      = dispatch_src1_tag[1];
-                next_entries[free_idx1].src1_value    = dispatch_src1_value[1];
-                next_entries[free_idx1].src2_ready    = dispatch_src2_ready[1];
-                next_entries[free_idx1].src2_tag      = dispatch_src2_tag[1];
-                next_entries[free_idx1].src2_value    = dispatch_src2_value[1];
-                next_entries[free_idx1].branch_funct3 = dispatch_branch_funct3[1];
-                next_entries[free_idx1].branch_target = dispatch_branch_target[1];
-                next_entries[free_idx1].branch_NPC    = dispatch_branch_NPC[1];
+                next_entries[free_idx1].busy              = 1'b1;
+                next_entries[free_idx1].op                = dispatch_op[1];
+                next_entries[free_idx1].dest_tag          = dispatch_dest_tag[1];
+                next_entries[free_idx1].src1_ready        = dispatch_src1_ready[1];
+                next_entries[free_idx1].src1_val_present  = dispatch_src1_ready[1];
+                next_entries[free_idx1].src1_tag          = dispatch_src1_tag[1];
+                next_entries[free_idx1].src1_value        = dispatch_src1_value[1];
+                next_entries[free_idx1].src2_ready        = dispatch_src2_ready[1];
+                next_entries[free_idx1].src2_val_present  = dispatch_src2_ready[1];
+                next_entries[free_idx1].src2_tag          = dispatch_src2_tag[1];
+                next_entries[free_idx1].src2_value        = dispatch_src2_value[1];
+                next_entries[free_idx1].branch_funct3     = dispatch_branch_funct3[1];
+                next_entries[free_idx1].branch_target     = dispatch_branch_target[1];
+                next_entries[free_idx1].branch_NPC        = dispatch_branch_NPC[1];
             end
         end
     end

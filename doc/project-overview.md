@@ -248,6 +248,65 @@ regresses. Full evidence in
 The current canonical state of the project is the `milestone4` branch in
 `4340-p4-milestone4/`.
 
+### 3.7 Week 7: Early tag broadcast (advanced feature, correctness-only)
+
+Week 7 is the first advanced feature: early tag broadcast (ETB).  The
+idea is small and localized — the multiplier raises an extra one-cycle-
+early sideband naming the ROB tag that will retire on the next CDB
+cycle, and the RS / LSQ use it to flip the registered `src*_ready` bit
+a cycle sooner on entries whose operand is that tag.  Nothing about
+dispatch, commit, or CDB width changes.
+
+The producer is a single tap: `verilog/mult.sv` exposes
+`early_done = internal_dones[MULT_STAGES-2]`, which is the `done` flop
+of the second-to-last `mult_stage`.  It fires exactly one cycle before
+the final `done`.  `verilog/pipeline.sv` combines that with the
+registered producer tag into the `{early_cdb_valid, early_cdb_tag}`
+sideband, gated by `!mult_flushed && !mispredict_valid` so a poisoned
+multiply cannot wake a re-dispatched consumer.  A
+`+define+DISABLE_EARLY_TAG` escape hatch at the Makefile level ties the
+valid bit to 0 for regression A/B.
+
+The consumers are `verilog/rs.sv` and `verilog/lsq.sv`.  Each entry
+grows a pair of registered bits — `src*_val_present` on the RS,
+`base_val_present` / `data_val_present` on the LSQ.  Dispatch
+initializes them alongside `*_ready`; ETB flips only the `*_ready` bit
+and leaves `*_val_present` at 0 for the one-cycle window; the real CDB
+broadcast the next cycle latches the value and flips `val_present` to 1.
+The CDB wakeup is gated on `!val_present` (rather than `!ready`), so an
+entry already woken by ETB still receives the value on the CDB cycle.
+The RS issue value-mux gains a `!val_present` arm that forwards
+`cdb_value` when the selector picks an ETB-woken entry — this is the
+only codepath that looks at `cdb_value` for an already-ready entry.
+
+The load-bearing rule from `rs-issue-loop-fix.md` is preserved: the
+issue selector reads the *registered* `src*_ready` only.  ETB never
+feeds `issue_found` combinationally.  The wakeup block sets the
+registered bit through `next_entries`, one cycle away from the
+selector.  This is verified by a dedicated unit test
+(`test_early_tag_does_not_bypass_selector_combinationally` in
+`test/rs_test.sv`) that pulses `early_cdb_valid` and asserts
+`issue_valid` stays 0 on that cycle.
+
+Verification: all 34 programs halt at WFI with ETB on and with
+`DISABLE_EARLY_TAG`; every `.wb` file is byte-identical to the
+`SERIALIZE_BRANCHES` sign-off baseline in both modes; the 6 tested
+modules pass in sim and synth; the new ETB-specific unit-test scenarios
+pass in both sim and synth.
+
+Per-program cycle counts are **unchanged** on all 34 programs (ETB-on
+matches the pre-ETB `baseline-etb-off.txt` exactly).  The expected
+MULT-chain speed-up is swallowed by CDB contention: on the cycle the
+MULT broadcasts, `issue_accept` for non-MULT ops is
+`!mult_done_valid` = 0, so the consumer still has to issue on cycle
+N+2 whether ETB fired or not.  The mechanism works (unit tests confirm
+`early_done` leads `done` by exactly one cycle and that `src*_ready` /
+`base_ready` flip one cycle earlier); the observable perf win waits
+for a second CDB to land with 2-way superscalar, which a teammate is
+working on in parallel.  Design trade-offs, the cycle-by-cycle timing
+diagram, and alternatives considered are in
+[`early-tag-broadcast-report.md`](early-tag-broadcast-report.md).
+
 ---
 
 ## 4. Architecture in one read-through
@@ -1002,6 +1061,36 @@ re-synthesizing the full pipeline is slow.
   above). Per-module synth is green but does not imply full-pipeline
   closure; the RS→MULT cross-module path is the one that needs work.
 
+**Recent addition — early tag broadcast (advanced feature, correctness-only):**
+
+- `verilog/mult.sv` exposes `early_done` one cycle before `done`;
+  `verilog/pipeline.sv` drives a `{early_cdb_valid, early_cdb_tag}`
+  sideband gated by `!mult_flushed && !mispredict_valid`. The RS and
+  LSQ snoop it to flip the registered `src*_ready` / `base_ready` /
+  `data_ready` bit one cycle sooner. `src*_val_present` companion bits
+  keep the value-mux honest: ETB only flips ready, the real CDB lands
+  the value the next cycle.
+- The issue selector still reads the registered `src*_ready` only —
+  the `rs-issue-loop-fix` rule is intact, and there is a dedicated
+  unit-test scenario
+  (`test_early_tag_does_not_bypass_selector_combinationally`) that
+  catches any future combinational ETB->selector path regression.
+- `+define+DISABLE_EARLY_TAG` at the Makefile level ties the valid
+  bit to 0 for A/B. 34/34 programs halt at WFI with ETB on and with
+  the escape hatch; every `.wb` file is byte-identical to the
+  `SERIALIZE_BRANCHES` sign-off baseline in both modes.
+- Per-program cycle counts are **identical** to pre-ETB on all 34
+  programs. The early wakeup is real (unit tests verify `early_done`
+  leads `done` by exactly one cycle and that the RS / LSQ ready bits
+  flip one cycle sooner), but the consumer still issues on cycle N+2
+  because `issue_accept` for non-MULT ops is gated on
+  `!mult_done_valid`. CDB contention in the 1-wide pipeline swallows
+  the save; it is unblocked by the second CDB that 2-way superscalar
+  adds.
+- Full writeup including the cycle-accurate timing diagram, design
+  alternatives, and known limitations is in
+  [`early-tag-broadcast-report.md`](early-tag-broadcast-report.md).
+
 ---
 
 ## 9. What is still ahead
@@ -1010,15 +1099,19 @@ The base design is done: ROB / RS / LSQ / D-cache, BTB + bimodal
 predictor, 34/34 programs halting cleanly. What's left is advanced
 features and synthesis closure.
 
-The proposal calls for two difficult advanced features. The main
-one is going 2-way superscalar across fetch, dispatch, issue, and commit.
-That is also where `psel_gen.sv` finally earns its keep, and where the spec
-lets us add a second CDB (the "CDB count ≤ superscalar width" rule). The
-other is early tag broadcast, where producer FUs publish their destination
-tag one cycle before the value lands on the CDB so dependents can wake up
-earlier. The proposal targets 16-18 advanced-feature points overall, with
-at least one "difficult" feature implemented; superscalar plus early tag
-broadcast is the primary path to that target.
+The proposal calls for two difficult advanced features. Early tag
+broadcast landed in week 7 (see §3.7 and §8) but carries zero
+measurable perf on the current suite because CDB contention swallows
+the one-cycle save — the feature unlocks its speed-up as soon as the
+second CDB lands with superscalar. The remaining difficult feature is
+going 2-way superscalar across fetch, dispatch, issue, and commit, and
+that is where `psel_gen.sv` finally earns its keep. The spec permits a
+second CDB once issue width grows (the "CDB count ≤ superscalar width"
+rule). A teammate is driving superscalar in parallel; ETB is wired to
+hand off cleanly — no restructuring required on the consumer side.
+The proposal targets 16-18 advanced-feature points overall, with at
+least one "difficult" feature implemented; ETB + superscalar is the
+primary path to that target.
 
 Beyond the difficult features, the proposal lists several simpler ones we
 want to pick up: a more sophisticated branch predictor, store-to-load
