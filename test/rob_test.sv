@@ -28,46 +28,47 @@ module rob_test;
   logic                 flush;
 
   // dispatch
-  logic                 dispatch_valid;
-  logic [4:0]           dispatch_dest_reg;
-  logic [XLEN-1:0]      dispatch_NPC;
-  logic [XLEN-1:0]      dispatch_PC;
-  logic                 dispatch_halt;
-  logic                 dispatch_illegal;
-  logic                 dispatch_is_branch;
-  logic                 dispatch_is_uncond_branch;
-  logic                 dispatch_is_store;
-  logic                 dispatch_predicted_taken;
-  logic [XLEN-1:0]      dispatch_predicted_target;
+  logic [1:0]           dispatch_valid;
+  logic [4:0]           dispatch_dest_reg        [2];
+  logic [XLEN-1:0]      dispatch_NPC             [2];
+  logic [XLEN-1:0]      dispatch_PC              [2];
+  logic [1:0]           dispatch_halt;
+  logic [1:0]           dispatch_illegal;
+  logic [1:0]           dispatch_is_branch;
+  logic [1:0]           dispatch_is_uncond_branch;
+  logic [1:0]           dispatch_is_store;
+  logic [1:0]           dispatch_predicted_taken;
+  logic [XLEN-1:0]      dispatch_predicted_target [2];
 
   logic                 rob_full;
-  logic [TAG_W-1:0]     dispatch_tag;
+  logic                 rob_almost_full;
+  logic [TAG_W-1:0]     dispatch_tag             [2];
 
   // cdb
-  logic                 cdb_valid;
-  logic [TAG_W-1:0]     cdb_tag;
-  logic [XLEN-1:0]      cdb_value;
-  logic                 cdb_take_branch;
-  logic [XLEN-1:0]      cdb_branch_target;
+  logic [1:0]           cdb_valid;
+  logic [TAG_W-1:0]     cdb_tag           [2];
+  logic [XLEN-1:0]      cdb_value         [2];
+  logic [1:0]           cdb_take_branch;
+  logic [XLEN-1:0]      cdb_branch_target [2];
 
   // store-done sideband
-  logic                 store_done_valid;
-  logic [TAG_W-1:0]     store_done_tag;
+  logic [1:0]           store_done_valid;
+  logic [TAG_W-1:0]     store_done_tag    [2];
 
   // commit
-  logic                 commit_valid;
-  logic [TAG_W-1:0]     commit_tag;
-  logic                 commit_is_store;
-  logic [4:0]           commit_dest_reg;
-  logic [XLEN-1:0]      commit_value;
-  logic [XLEN-1:0]      commit_NPC;
-  logic                 commit_halt;
-  logic                 commit_illegal;
-  logic                 commit_is_branch;
-  logic                 commit_take_branch;
-  logic [XLEN-1:0]      commit_branch_target;
-  logic                 commit_is_uncond_branch;
-  logic [XLEN-1:0]      commit_branch_PC;
+  logic [1:0]           commit_valid;
+  logic [TAG_W-1:0]     commit_tag           [2];
+  logic [1:0]           commit_is_store;
+  logic [4:0]           commit_dest_reg      [2];
+  logic [XLEN-1:0]      commit_value         [2];
+  logic [XLEN-1:0]      commit_NPC           [2];
+  logic [1:0]           commit_halt;
+  logic [1:0]           commit_illegal;
+  logic [1:0]           commit_is_branch;
+  logic [1:0]           commit_take_branch;
+  logic [XLEN-1:0]      commit_branch_target [2];
+  logic [1:0]           commit_is_uncond_branch;
+  logic [XLEN-1:0]      commit_branch_PC     [2];
   logic                 mispredict_valid;
   logic [XLEN-1:0]      mispredict_target;
 
@@ -105,6 +106,7 @@ module rob_test;
     .dispatch_predicted_target(dispatch_predicted_target),
 
     .rob_full(rob_full),
+    .rob_almost_full(rob_almost_full),
     .dispatch_tag(dispatch_tag),
 
     .cdb_valid(cdb_valid),
@@ -158,31 +160,31 @@ module rob_test;
   // ============================================================
   task automatic clear_inputs;
     begin
-      flush                     = 1'b0;
+      flush                        = 1'b0;
 
-      dispatch_valid            = 1'b0;
-      dispatch_dest_reg         = 5'd0;
-      dispatch_NPC              = '0;
-      dispatch_PC               = '0;
-      dispatch_halt             = 1'b0;
-      dispatch_illegal          = 1'b0;
-      dispatch_is_branch        = 1'b0;
-      dispatch_is_uncond_branch = 1'b0;
-      dispatch_is_store         = 1'b0;
-      dispatch_predicted_taken  = 1'b0;
-      dispatch_predicted_target = '0;
+      dispatch_valid               = 2'b0;
+      dispatch_dest_reg[0]         = 5'd0;       dispatch_dest_reg[1]         = 5'd0;
+      dispatch_NPC[0]              = '0;          dispatch_NPC[1]              = '0;
+      dispatch_PC[0]               = '0;          dispatch_PC[1]               = '0;
+      dispatch_halt                = 2'b0;
+      dispatch_illegal             = 2'b0;
+      dispatch_is_branch           = 2'b0;
+      dispatch_is_uncond_branch    = 2'b0;
+      dispatch_is_store            = 2'b0;
+      dispatch_predicted_taken     = 2'b0;
+      dispatch_predicted_target[0] = '0;          dispatch_predicted_target[1] = '0;
 
-      cdb_valid                 = 1'b0;
-      cdb_tag                   = '0;
-      cdb_value                 = '0;
-      cdb_take_branch           = 1'b0;
-      cdb_branch_target         = '0;
+      cdb_valid                    = 2'b0;
+      cdb_tag[0]                   = '0;          cdb_tag[1]          = '0;
+      cdb_value[0]                 = '0;          cdb_value[1]        = '0;
+      cdb_take_branch              = 2'b0;
+      cdb_branch_target[0]         = '0;          cdb_branch_target[1] = '0;
 
-      store_done_valid          = 1'b0;
-      store_done_tag            = '0;
+      store_done_valid             = 2'b0;
+      store_done_tag[0]            = '0;          store_done_tag[1]   = '0;
 
-      query1_arch_reg           = 5'd0;
-      query2_arch_reg           = 5'd0;
+      query1_arch_reg              = 5'd0;
+      query2_arch_reg              = 5'd0;
     end
   endtask
 
@@ -220,28 +222,28 @@ module rob_test;
     input logic            halt;
     input logic            illegal;
     begin
-      dispatch_valid     = 1'b1;
-      dispatch_dest_reg  = dest;
-      dispatch_NPC       = npc;
-      dispatch_PC        = npc - 4;
-      dispatch_is_branch = is_branch;
-      dispatch_halt      = halt;
-      dispatch_illegal   = illegal;
+      dispatch_valid[0]     = 1'b1; dispatch_valid[1]    = 1'b0;
+      dispatch_dest_reg[0]  = dest; dispatch_dest_reg[1] = 5'd0;
+      dispatch_NPC[0]       = npc;  dispatch_NPC[1]      = '0;
+      dispatch_PC[0]        = npc - 4; dispatch_PC[1]    = '0;
+      dispatch_is_branch[0] = is_branch; dispatch_is_branch[1] = 1'b0;
+      dispatch_halt[0]      = halt;   dispatch_halt[1]    = 1'b0;
+      dispatch_illegal[0]   = illegal; dispatch_illegal[1] = 1'b0;
     end
   endtask
 
   task automatic stop_dispatch;
     begin
-      dispatch_valid            = 1'b0;
-      dispatch_dest_reg         = 5'd0;
-      dispatch_NPC              = '0;
-      dispatch_PC               = '0;
-      dispatch_is_branch        = 1'b0;
-      dispatch_is_uncond_branch = 1'b0;
-      dispatch_halt             = 1'b0;
-      dispatch_illegal          = 1'b0;
-      dispatch_predicted_taken  = 1'b0;
-      dispatch_predicted_target = '0;
+      dispatch_valid               = 2'b0;
+      dispatch_dest_reg[0]         = 5'd0;      dispatch_dest_reg[1]         = 5'd0;
+      dispatch_NPC[0]              = '0;         dispatch_NPC[1]              = '0;
+      dispatch_PC[0]               = '0;         dispatch_PC[1]               = '0;
+      dispatch_is_branch           = 2'b0;
+      dispatch_is_uncond_branch    = 2'b0;
+      dispatch_halt                = 2'b0;
+      dispatch_illegal             = 2'b0;
+      dispatch_predicted_taken     = 2'b0;
+      dispatch_predicted_target[0] = '0;         dispatch_predicted_target[1] = '0;
     end
   endtask
 
@@ -251,21 +253,21 @@ module rob_test;
     input logic             tk;
     input logic [XLEN-1:0]  tgt;
     begin
-      cdb_valid         = 1'b1;
-      cdb_tag           = tag;
-      cdb_value         = val;
-      cdb_take_branch   = tk;
-      cdb_branch_target = tgt;
+      cdb_valid            = 2'b01;
+      cdb_tag[0]           = tag;  cdb_tag[1]           = '0;
+      cdb_value[0]         = val;  cdb_value[1]         = '0;
+      cdb_take_branch[0]   = tk;   cdb_take_branch[1]   = 1'b0;
+      cdb_branch_target[0] = tgt;  cdb_branch_target[1] = '0;
     end
   endtask
 
   task automatic stop_cdb;
     begin
-      cdb_valid         = 1'b0;
-      cdb_tag           = '0;
-      cdb_value         = '0;
-      cdb_take_branch   = 1'b0;
-      cdb_branch_target = '0;
+      cdb_valid            = 2'b0;
+      cdb_tag[0]           = '0;  cdb_tag[1]           = '0;
+      cdb_value[0]         = '0;  cdb_value[1]         = '0;
+      cdb_take_branch      = 2'b0;
+      cdb_branch_target[0] = '0;  cdb_branch_target[1] = '0;
     end
   endtask
 
@@ -279,7 +281,7 @@ module rob_test;
     begin
       dispatch_drive(dest, npc, is_branch, 1'b0, 1'b0);
       #1;
-      out_tag = dispatch_tag;
+      out_tag = dispatch_tag[0];
       @(posedge clock);
       #1;
       stop_dispatch();
@@ -295,18 +297,18 @@ module rob_test;
     input  logic [XLEN-1:0] pred_target;
     output logic [TAG_W-1:0] out_tag;
     begin
-      dispatch_valid            = 1'b1;
-      dispatch_dest_reg         = dest;
-      dispatch_NPC              = pc + 4;
-      dispatch_PC               = pc;
-      dispatch_is_branch        = 1'b1;
-      dispatch_is_uncond_branch = is_uncond;
-      dispatch_halt             = 1'b0;
-      dispatch_illegal          = 1'b0;
-      dispatch_predicted_taken  = pred_taken;
-      dispatch_predicted_target = pred_target;
+      dispatch_valid[0]            = 1'b1;       dispatch_valid[1]            = 1'b0;
+      dispatch_dest_reg[0]         = dest;        dispatch_dest_reg[1]         = 5'd0;
+      dispatch_NPC[0]              = pc + 4;      dispatch_NPC[1]              = '0;
+      dispatch_PC[0]               = pc;          dispatch_PC[1]               = '0;
+      dispatch_is_branch[0]        = 1'b1;        dispatch_is_branch[1]        = 1'b0;
+      dispatch_is_uncond_branch[0] = is_uncond;   dispatch_is_uncond_branch[1] = 1'b0;
+      dispatch_halt                = 2'b0;
+      dispatch_illegal             = 2'b0;
+      dispatch_predicted_taken[0]  = pred_taken;  dispatch_predicted_taken[1]  = 1'b0;
+      dispatch_predicted_target[0] = pred_target; dispatch_predicted_target[1] = '0;
       #1;
-      out_tag = dispatch_tag;
+      out_tag = dispatch_tag[0];
       @(posedge clock);
       #1;
       stop_dispatch();
@@ -378,21 +380,21 @@ module rob_test;
       dispatch_one(5'd5, 32'h0000_1004, 1'b0, t0);
 
       // head should not commit yet (entry not ready)
-      check_equal("commit_valid pre-complete", commit_valid, 1'b0);
+      check_equal("commit_valid pre-complete", commit_valid[0], 1'b0);
 
       // Drive CDB in the next cycle; commit should become visible combinationally
       // *after* the CDB write latches (i.e. on the cycle after).
       complete_cdb(t0, 32'hDEAD_BEEF);
 
       // Now the entry is ready: check commit outputs before the head advances.
-      check_equal("commit_valid",        commit_valid,    1'b1);
-      check_equal("commit_dest_reg",     commit_dest_reg, 5'd5);
-      check_equal("commit_value",        commit_value,    32'hDEAD_BEEF);
-      check_equal("commit_NPC",          commit_NPC,      32'h0000_1004);
+      check_equal("commit_valid",        commit_valid[0], 1'b1);
+      check_equal("commit_dest_reg",     commit_dest_reg[0], 5'd5);
+      check_equal("commit_value",        commit_value[0],    32'hDEAD_BEEF);
+      check_equal("commit_NPC",          commit_NPC[0],      32'h0000_1004);
 
       // Let it retire.
       idle_cycle();
-      check_equal("commit_valid after retire", commit_valid, 1'b0);
+      check_equal("commit_valid after retire", commit_valid[0], 1'b0);
     end
   endtask
 
@@ -410,31 +412,31 @@ module rob_test;
 
       // Complete tag 2 first.
       complete_cdb(t2, 32'h2222_2222);
-      check_equal("no commit after t2 only", commit_valid, 1'b0);
+      check_equal("no commit after t2 only", commit_valid[0], 1'b0);
 
       // Complete tag 1 next.
       complete_cdb(t1, 32'h1111_1111);
-      check_equal("no commit after t1 too", commit_valid, 1'b0);
+      check_equal("no commit after t1 too", commit_valid[0], 1'b0);
 
       // Complete tag 0 last - now head should retire.
       complete_cdb(t0, 32'h0000_0000);
 
-      check_equal("commit t0 valid", commit_valid,    1'b1);
-      check_equal("commit t0 dest",  commit_dest_reg, 5'd10);
-      check_equal("commit t0 value", commit_value,    32'h0000_0000);
+      // 2-way ROB: t0 and t1 both ready, commit together in same cycle
+      check_equal("commit t0 valid", commit_valid[0],    1'b1);
+      check_equal("commit t0 dest",  commit_dest_reg[0], 5'd10);
+      check_equal("commit t0 value", commit_value[0],    32'h0000_0000);
+      check_equal("commit t1 valid", commit_valid[1],    1'b1);
+      check_equal("commit t1 dest",  commit_dest_reg[1], 5'd11);
+      check_equal("commit t1 value", commit_value[1],    32'h1111_1111);
       idle_cycle();
 
-      check_equal("commit t1 valid", commit_valid,    1'b1);
-      check_equal("commit t1 dest",  commit_dest_reg, 5'd11);
-      check_equal("commit t1 value", commit_value,    32'h1111_1111);
+      // t2 commits next cycle
+      check_equal("commit t2 valid", commit_valid[0],    1'b1);
+      check_equal("commit t2 dest",  commit_dest_reg[0], 5'd12);
+      check_equal("commit t2 value", commit_value[0],    32'h2222_2222);
       idle_cycle();
 
-      check_equal("commit t2 valid", commit_valid,    1'b1);
-      check_equal("commit t2 dest",  commit_dest_reg, 5'd12);
-      check_equal("commit t2 value", commit_value,    32'h2222_2222);
-      idle_cycle();
-
-      check_equal("no commit after drain", commit_valid, 1'b0);
+      check_equal("no commit after drain", commit_valid[0], 1'b0);
     end
   endtask
 
@@ -680,9 +682,9 @@ module rob_test;
         dispatch_one(5'd1 + (k[4:0] % 5'd30), 32'hA00 + 4 * k, 1'b0, tx);
         complete_cdb(tx, 32'hC0DE_0000 + k);
         // commit becomes visible on this cycle; advance to retire.
-        check_equal("commit visible after complete", commit_valid, 1'b1);
+        check_equal("commit visible after complete", commit_valid[0], 1'b1);
         idle_cycle();
-        check_equal("no stuck state", commit_valid, 1'b0);
+        check_equal("no stuck state", commit_valid[0], 1'b0);
       end
 
       // After all that, the ROB should be empty and not full.
@@ -722,7 +724,7 @@ module rob_test;
 
       check_equal("mispredict pulse",            mispredict_valid,  1'b1);
       check_equal("mispredict_target",           mispredict_target, 32'h0000_1200);
-      check_equal("commit_is_branch",            commit_is_branch,  1'b1);
+      check_equal("commit_is_branch",            commit_is_branch[0],  1'b1);
 
       idle_cycle();
       check_equal("mispredict falls after retire", mispredict_valid, 1'b0);

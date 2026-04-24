@@ -13,39 +13,40 @@ module rs_test;
   logic                 flush;
 
   // dispatch side
-  logic                 dispatch_valid;
-  logic [OP_W-1:0]      dispatch_op;
-  logic [TAG_W-1:0]     dispatch_dest_tag;
+  logic [1:0]           dispatch_valid;
+  logic [OP_W-1:0]      dispatch_op          [2];
+  logic [TAG_W-1:0]     dispatch_dest_tag    [2];
 
-  logic                 dispatch_src1_ready;
-  logic [TAG_W-1:0]     dispatch_src1_tag;
-  logic [XLEN-1:0]      dispatch_src1_value;
+  logic [1:0]           dispatch_src1_ready;
+  logic [TAG_W-1:0]     dispatch_src1_tag    [2];
+  logic [XLEN-1:0]      dispatch_src1_value  [2];
 
-  logic                 dispatch_src2_ready;
-  logic [TAG_W-1:0]     dispatch_src2_tag;
-  logic [XLEN-1:0]      dispatch_src2_value;
+  logic [1:0]           dispatch_src2_ready;
+  logic [TAG_W-1:0]     dispatch_src2_tag    [2];
+  logic [XLEN-1:0]      dispatch_src2_value  [2];
 
-  logic [2:0]           dispatch_branch_funct3;
-  logic [XLEN-1:0]      dispatch_branch_target;
-  logic [XLEN-1:0]      dispatch_branch_NPC;
+  logic [2:0]           dispatch_branch_funct3 [2];
+  logic [XLEN-1:0]      dispatch_branch_target [2];
+  logic [XLEN-1:0]      dispatch_branch_NPC    [2];
 
   logic                 rs_full;
+  logic                 rs_almost_full;
 
   // cdb
-  logic                 cdb_valid;
-  logic [TAG_W-1:0]     cdb_tag;
-  logic [XLEN-1:0]      cdb_value;
+  logic [1:0]           cdb_valid;
+  logic [TAG_W-1:0]     cdb_tag   [2];
+  logic [XLEN-1:0]      cdb_value [2];
 
   // issue side
-  logic                 issue_accept;
-  logic                 issue_valid;
-  logic [OP_W-1:0]      issue_op;
-  logic [TAG_W-1:0]     issue_dest_tag;
-  logic [XLEN-1:0]      issue_src1_value;
-  logic [XLEN-1:0]      issue_src2_value;
-  logic [2:0]           issue_branch_funct3;
-  logic [XLEN-1:0]      issue_branch_target;
-  logic [XLEN-1:0]      issue_branch_NPC;
+  logic [1:0]           issue_accept;
+  logic [1:0]           issue_valid;
+  logic [OP_W-1:0]      issue_op          [2];
+  logic [TAG_W-1:0]     issue_dest_tag    [2];
+  logic [XLEN-1:0]      issue_src1_value  [2];
+  logic [XLEN-1:0]      issue_src2_value  [2];
+  logic [2:0]           issue_branch_funct3 [2];
+  logic [XLEN-1:0]      issue_branch_target [2];
+  logic [XLEN-1:0]      issue_branch_NPC    [2];
 
   integer error_count;
   integer test_count;
@@ -72,6 +73,7 @@ module rs_test;
     .dispatch_branch_NPC   (dispatch_branch_NPC),
 
     .rs_full(rs_full),
+    .rs_almost_full(rs_almost_full),
 
     .cdb_valid(cdb_valid),
     .cdb_tag(cdb_tag),
@@ -103,25 +105,25 @@ module rs_test;
     begin
       flush               = 1'b0;
 
-      dispatch_valid      = 1'b0;
-      dispatch_op         = '0;
-      dispatch_dest_tag   = '0;
-      dispatch_src1_ready = 1'b0;
-      dispatch_src1_tag   = '0;
-      dispatch_src1_value = '0;
-      dispatch_src2_ready = 1'b0;
-      dispatch_src2_tag   = '0;
-      dispatch_src2_value = '0;
+      dispatch_valid         = 2'b0;
+      dispatch_op[0]         = '0;        dispatch_op[1]         = '0;
+      dispatch_dest_tag[0]   = '0;        dispatch_dest_tag[1]   = '0;
+      dispatch_src1_ready    = 2'b0;
+      dispatch_src1_tag[0]   = '0;        dispatch_src1_tag[1]   = '0;
+      dispatch_src1_value[0] = '0;        dispatch_src1_value[1] = '0;
+      dispatch_src2_ready    = 2'b0;
+      dispatch_src2_tag[0]   = '0;        dispatch_src2_tag[1]   = '0;
+      dispatch_src2_value[0] = '0;        dispatch_src2_value[1] = '0;
 
-      dispatch_branch_funct3 = 3'b0;
-      dispatch_branch_target = '0;
-      dispatch_branch_NPC    = '0;
+      dispatch_branch_funct3[0] = 3'b0;  dispatch_branch_funct3[1] = 3'b0;
+      dispatch_branch_target[0] = '0;    dispatch_branch_target[1] = '0;
+      dispatch_branch_NPC[0]    = '0;    dispatch_branch_NPC[1]    = '0;
 
-      cdb_valid           = 1'b0;
-      cdb_tag             = '0;
-      cdb_value           = '0;
+      cdb_valid    = 2'b0;
+      cdb_tag[0]   = '0; cdb_tag[1]   = '0;
+      cdb_value[0] = '0; cdb_value[1] = '0;
 
-      issue_accept        = 1'b0;
+      issue_accept = 2'b0;
     end
   endtask
 
@@ -151,8 +153,8 @@ module rs_test;
 
   task automatic expect_no_issue;
     begin
-      if (issue_valid !== 1'b0) begin
-        $display("ERROR: expected no issue, but issue_valid=1 @ t=%0t", $time);
+      if (issue_valid !== 2'b0) begin
+        $display("ERROR: expected no issue, but issue_valid=%b @ t=%0t", issue_valid, $time);
         error_count = error_count + 1;
       end
     end
@@ -164,14 +166,14 @@ module rs_test;
     input logic [XLEN-1:0]  exp_v1;
     input logic [XLEN-1:0]  exp_v2;
     begin
-      if (issue_valid !== 1'b1) begin
-        $display("ERROR: expected issue_valid=1 @ t=%0t", $time);
+      if (issue_valid[0] !== 1'b1) begin
+        $display("ERROR: expected issue_valid[0]=1 @ t=%0t", $time);
         error_count = error_count + 1;
       end else begin
-        check_equal("issue_op",         issue_op,         exp_op);
-        check_equal("issue_dest_tag",   issue_dest_tag,   exp_dest);
-        check_equal("issue_src1_value", issue_src1_value, exp_v1);
-        check_equal("issue_src2_value", issue_src2_value, exp_v2);
+        check_equal("issue_op",         issue_op[0],         exp_op);
+        check_equal("issue_dest_tag",   issue_dest_tag[0],   exp_dest);
+        check_equal("issue_src1_value", issue_src1_value[0], exp_v1);
+        check_equal("issue_src2_value", issue_src2_value[0], exp_v2);
       end
     end
   endtask
@@ -186,31 +188,31 @@ module rs_test;
     input logic [TAG_W-1:0] s2_tag;
     input logic [XLEN-1:0]  s2_val;
     begin
-      dispatch_valid      = 1'b1;
-      dispatch_op         = op;
-      dispatch_dest_tag   = dest_tag;
+      dispatch_valid[0]      = 1'b1; dispatch_valid[1]      = 1'b0;
+      dispatch_op[0]         = op;   dispatch_op[1]         = '0;
+      dispatch_dest_tag[0]   = dest_tag; dispatch_dest_tag[1] = '0;
 
-      dispatch_src1_ready = s1_ready;
-      dispatch_src1_tag   = s1_tag;
-      dispatch_src1_value = s1_val;
+      dispatch_src1_ready[0] = s1_ready; dispatch_src1_ready[1] = 1'b0;
+      dispatch_src1_tag[0]   = s1_tag;   dispatch_src1_tag[1]   = '0;
+      dispatch_src1_value[0] = s1_val;   dispatch_src1_value[1] = '0;
 
-      dispatch_src2_ready = s2_ready;
-      dispatch_src2_tag   = s2_tag;
-      dispatch_src2_value = s2_val;
+      dispatch_src2_ready[0] = s2_ready; dispatch_src2_ready[1] = 1'b0;
+      dispatch_src2_tag[0]   = s2_tag;   dispatch_src2_tag[1]   = '0;
+      dispatch_src2_value[0] = s2_val;   dispatch_src2_value[1] = '0;
     end
   endtask
 
   task automatic stop_dispatch;
     begin
-      dispatch_valid      = 1'b0;
-      dispatch_op         = '0;
-      dispatch_dest_tag   = '0;
-      dispatch_src1_ready = 1'b0;
-      dispatch_src1_tag   = '0;
-      dispatch_src1_value = '0;
-      dispatch_src2_ready = 1'b0;
-      dispatch_src2_tag   = '0;
-      dispatch_src2_value = '0;
+      dispatch_valid         = 2'b0;
+      dispatch_op[0]         = '0;      dispatch_op[1]         = '0;
+      dispatch_dest_tag[0]   = '0;      dispatch_dest_tag[1]   = '0;
+      dispatch_src1_ready    = 2'b0;
+      dispatch_src1_tag[0]   = '0;      dispatch_src1_tag[1]   = '0;
+      dispatch_src1_value[0] = '0;      dispatch_src1_value[1] = '0;
+      dispatch_src2_ready    = 2'b0;
+      dispatch_src2_tag[0]   = '0;      dispatch_src2_tag[1]   = '0;
+      dispatch_src2_value[0] = '0;      dispatch_src2_value[1] = '0;
     end
   endtask
 
@@ -218,26 +220,26 @@ module rs_test;
     input logic [TAG_W-1:0] tag;
     input logic [XLEN-1:0]  val;
     begin
-      cdb_valid = 1'b1;
-      cdb_tag   = tag;
-      cdb_value = val;
+      cdb_valid    = 2'b01;
+      cdb_tag[0]   = tag; cdb_tag[1]   = '0;
+      cdb_value[0] = val; cdb_value[1] = '0;
     end
   endtask
 
   task automatic stop_cdb;
     begin
-      cdb_valid = 1'b0;
-      cdb_tag   = '0;
-      cdb_value = '0;
+      cdb_valid    = 2'b0;
+      cdb_tag[0]   = '0; cdb_tag[1]   = '0;
+      cdb_value[0] = '0; cdb_value[1] = '0;
     end
   endtask
 
   task automatic accept_issue_one_cycle;
     begin
-      issue_accept = 1'b1;
+      issue_accept = 2'b01;
       @(posedge clock);
       #1;
-      issue_accept = 1'b0;
+      issue_accept = 2'b0;
     end
   endtask
 

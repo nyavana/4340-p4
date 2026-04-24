@@ -21,7 +21,7 @@
 // this is *your* processor, you decide these values (try analyzing which is best!)
 
 // superscalar width
-`define N 1
+`define N 2
 
 // sizes
 `define ROB_SZ 8
@@ -44,7 +44,7 @@
 `define DCACHE_WAYS  2
 
 // functional units (you should decide if you want more or fewer types of FUs)
-`define NUM_FU_ALU 1
+`define NUM_FU_ALU 2
 `define NUM_FU_MULT 1
 `define NUM_FU_LOAD 1
 `define NUM_FU_STORE 1

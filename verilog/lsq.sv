@@ -32,7 +32,7 @@
 //                                                                     //
 /////////////////////////////////////////////////////////////////////////
 
-`include "verilog/sys_defs.svh"
+`include "sys_defs.svh"
 
 module lsq #(
     parameter LSQ_SIZE = `LSQ_SZ,
@@ -65,9 +65,9 @@ module lsq #(
     output logic              lsq_full,
 
     // ---- CDB snoop (operand wakeup) ----
-    input  logic              cdb_valid,
-    input  logic [TAG_W-1:0]  cdb_tag,
-    input  logic [XLEN-1:0]   cdb_value,
+    input  logic [1:0]            cdb_valid,
+    input  logic [TAG_W-1:0]      cdb_tag [2],
+    input  logic [XLEN-1:0]       cdb_value [2],
 
     // ---- Sideband to ROB so a store can become commit-ready ----
     output logic              store_ready_valid,
@@ -371,17 +371,20 @@ module lsq #(
         end else begin
             // 1) CDB wakeup
             for (i = 0; i < LSQ_SIZE; i++) begin
-                if (entries[i].busy && cdb_valid) begin
-                    if (!entries[i].base_ready &&
-                        entries[i].base_tag == cdb_tag) begin
-                        next_entries[i].base_ready = 1'b1;
-                        next_entries[i].base_value = cdb_value;
-                    end
-                    if (entries[i].is_store &&
-                        !entries[i].data_ready &&
-                        entries[i].data_tag == cdb_tag) begin
-                        next_entries[i].data_ready = 1'b1;
-                        next_entries[i].data_value = cdb_value;
+                if (entries[i].busy) begin
+                    integer k;
+                    for (k = 0; k < 2; k++) begin
+                        if (cdb_valid[k] && !entries[i].base_ready &&
+                            entries[i].base_tag == cdb_tag[k]) begin
+                            next_entries[i].base_ready = 1'b1;
+                            next_entries[i].base_value = cdb_value[k];
+                        end
+                        if (entries[i].is_store && cdb_valid[k] &&
+                            !entries[i].data_ready &&
+                            entries[i].data_tag == cdb_tag[k]) begin
+                            next_entries[i].data_ready = 1'b1;
+                            next_entries[i].data_value = cdb_value[k];
+                        end
                     end
                 end
             end

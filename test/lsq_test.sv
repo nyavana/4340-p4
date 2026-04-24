@@ -45,9 +45,9 @@ module lsq_test;
     logic              lsq_full;
 
     // CDB
-    logic              cdb_valid;
-    logic [TAG_W-1:0]  cdb_tag;
-    logic [XLEN-1:0]   cdb_value;
+    logic [1:0]        cdb_valid;
+    logic [TAG_W-1:0]  cdb_tag   [2];
+    logic [XLEN-1:0]   cdb_value [2];
 
     // store_ready sideband
     logic              store_ready_valid;
@@ -201,9 +201,9 @@ module lsq_test;
             dispatch_data_tag   = '0;
             dispatch_data_value = '0;
             dispatch_imm        = '0;
-            cdb_valid           = 1'b0;
-            cdb_tag             = '0;
-            cdb_value           = '0;
+            cdb_valid           = 2'b0;
+            cdb_tag[0]          = '0; cdb_tag[1]   = '0;
+            cdb_value[0]        = '0; cdb_value[1] = '0;
             rob_commit_valid    = 1'b0;
             rob_commit_tag      = '0;
             stub_mode              = 1'b0;
@@ -318,12 +318,12 @@ module lsq_test;
         input logic [TAG_W-1:0] tag;
         input logic [XLEN-1:0]  val;
         begin
-            cdb_valid = 1'b1;
-            cdb_tag   = tag;
-            cdb_value = val;
+            cdb_valid    = 2'b01;
+            cdb_tag[0]   = tag; cdb_tag[1]   = '0;
+            cdb_value[0] = val; cdb_value[1] = '0;
             @(posedge clock);
             #1;
-            cdb_valid = 1'b0;
+            cdb_valid = 2'b0;
         end
     endtask
 
