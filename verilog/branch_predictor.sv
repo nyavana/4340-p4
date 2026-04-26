@@ -24,6 +24,8 @@
 //                 is_uncond}; BHT counter moves one saturating step   //
 //                 toward the actual direction.                        //
 //                                                                     //
+//        Others : gshare implemented. 
+//                                                                     //
 /////////////////////////////////////////////////////////////////////////
 
 `include "verilog/sys_defs.svh"
@@ -66,12 +68,19 @@ module branch_predictor #(
         btb_idx = pc[BTB_IDX_W+1 : 2];
     endfunction
 
-    function automatic logic [BHT_IDX_W-1:0] bht_idx(input logic [XLEN-1:0] pc);
-        bht_idx = pc[BHT_IDX_W+1 : 2];
-    endfunction
-
     function automatic logic [BTB_TAG_W-1:0] btb_tag(input logic [XLEN-1:0] pc);
         btb_tag = pc[XLEN-1 : BTB_IDX_W+2];
+    endfunction
+    
+    function automatic logic [BHT_IDX_W-1:0] bht_pc_bits(input logic [XLEN-1:0] pc);
+        bht_pc_bits = pc[BHT_IDX_W+1 : 2];
+    endfunction
+
+    function automatic logic [BHT_IDX_W-1:0] bht_idx(
+        input logic [XLEN-1:0] pc,
+        input logic [BHT_IDX_W-1:0] hist
+    );
+        bht_idx = bht_pc_bits(pc) ^ hist;
     endfunction
 
     // ------------------------------------------------------------------
@@ -92,6 +101,13 @@ module branch_predictor #(
     // bias cold forward branches toward fall-through.
     // ------------------------------------------------------------------
     logic [1:0] bht [BHT_ENTRIES-1:0];
+    
+    localparam GHR_W = 2;
+    
+    logic [GHR_W-1:0]     ghr;
+    logic [BHT_IDX_W-1:0] ghr_ext;
+
+    assign ghr_ext = {{(BHT_IDX_W-GHR_W){1'b0}}, ghr};
 
     // ------------------------------------------------------------------
     // Combinational prediction lookup
@@ -103,7 +119,7 @@ module branch_predictor #(
     logic [1:0]           counter;
 
     assign pred_btb_i = btb_idx(predict_PC);
-    assign pred_bht_i = bht_idx(predict_PC);
+    assign pred_bht_i = bht_idx(predict_PC, ghr_ext);
     assign pred_tag   = btb_tag(predict_PC);
 
     assign btb_hit = btb[pred_btb_i].valid && (btb[pred_btb_i].tag == pred_tag);
@@ -134,7 +150,7 @@ module branch_predictor #(
     logic [1:0]           up_counter_nxt;
 
     assign up_btb_i       = btb_idx(update_PC);
-    assign up_bht_i       = bht_idx(update_PC);
+    assign up_bht_i       = bht_idx(update_PC, ghr_ext);
     assign up_tag         = btb_tag(update_PC);
     assign up_counter_cur = bht[up_bht_i];
 
@@ -156,13 +172,18 @@ module branch_predictor #(
             end
             for (i = 0; i < BHT_ENTRIES; i = i + 1)
                 bht[i] <= 2'b01;
+                ghr <= '0;
         end else if (update_valid) begin
             btb[up_btb_i].valid     <= 1'b1;
             btb[up_btb_i].tag       <= up_tag;
             btb[up_btb_i].target    <= update_target;
             btb[up_btb_i].is_uncond <= update_is_uncond;
-            bht[up_bht_i]           <= up_counter_nxt;
+            if (!update_is_uncond) begin
+                bht[up_bht_i] <= up_counter_nxt;
+                ghr           <= {ghr[GHR_W-2:0], update_taken};
+            end
         end
     end
 
 endmodule
+
