@@ -463,6 +463,23 @@ module pipeline (
     logic             pred_taken_raw;
     logic [`XLEN-1:0] pred_target_raw;
     logic             pred_is_uncond_raw;
+
+    // ---- RAS call/return detection (link regs per RISC-V hint: x1/x5) ----
+    //   call  : JAL or JALR with rd  in {x1, x5}
+    //   return: JALR    with rs1 in {x1, x5} and rd not in {x1, x5}
+    logic is_jal_inst;
+    logic is_jalr_inst;
+    logic rd_is_link;
+    logic rs1_is_link;
+    logic predict_is_call;
+    logic predict_is_return;
+    assign is_jal_inst  = dec_uncond_branch && (fetched_inst.r.opcode == 7'b1101111);
+    assign is_jalr_inst = dec_uncond_branch && (fetched_inst.r.opcode == 7'b1100111);
+    assign rd_is_link   = (fetched_inst.r.rd  == 5'd1) || (fetched_inst.r.rd  == 5'd5);
+    assign rs1_is_link  = (fetched_inst.r.rs1 == 5'd1) || (fetched_inst.r.rs1 == 5'd5);
+    assign predict_is_call   = (is_jal_inst || is_jalr_inst) && rd_is_link;
+    assign predict_is_return = is_jalr_inst && rs1_is_link && !rd_is_link;
+
 `ifdef DISABLE_PREDICTOR
     assign pred_valid     = 1'b0;
     assign pred_taken     = 1'b0;
@@ -483,6 +500,11 @@ module pipeline (
         .pred_taken       (pred_taken_raw),
         .pred_target      (pred_target_raw),
         .pred_is_uncond   (pred_is_uncond_raw),
+
+        .predict_is_return (predict_is_return),
+        .predict_link_pc   (fetched_NPC),
+        .ras_push_en       (dispatch_fire && predict_is_call),
+        .ras_pop_en        (dispatch_fire && predict_is_return),
 
         .update_valid     ((rob_commit_valid[0] && rob_commit_is_branch[0]) || (rob_commit_valid[1] && rob_commit_is_branch[1])),
         .update_PC        ((rob_commit_valid[0] && rob_commit_is_branch[0]) ? rob_commit_branch_PC[0] : rob_commit_branch_PC[1]),

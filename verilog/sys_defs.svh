@@ -35,6 +35,9 @@
 `define BTB_ENTRIES 32
 `define BHT_ENTRIES 64
 
+// Return address stack depth (power of two).
+`define RAS_ENTRIES 16
+
 `define LSQ_SZ 8
 
 // D-cache geometry: 32 total lines x 64 bits = 256 bytes, the cap from the
