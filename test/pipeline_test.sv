@@ -530,8 +530,10 @@ module testbench;
 `endif // !SYNTH
 
                 show_clk_count;
+`ifndef SYNTH
                 $display("@@  prefetch_hits: %0d demand cycles served by stream buffer",
                          core.sb_0.prefetch_hit_count);
+`endif
                 // print_close(); // close the pipe_print output file
                 $fclose(wb_fileno);
                 $fclose(store_fileno);

@@ -117,7 +117,7 @@ module rob #(
         automatic integer tmp;
         begin
             tmp = tag + amt;
-            while (tmp >= ROB_SIZE)
+            if (tmp >= ROB_SIZE)
                 tmp = tmp - ROB_SIZE;
             bump_tag = TAG_W'(tmp);
         end

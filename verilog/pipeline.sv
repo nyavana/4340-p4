@@ -699,15 +699,33 @@ module pipeline (
     // ================================================================
     // ROB
     // ================================================================
+    // Intermediate wires to avoid '{}' patterns unsupported by DC synthesis
+    logic [4:0]        rob_dispatch_dest_reg [2];
+    logic [`XLEN-1:0]  rob_dispatch_NPC [2];
+    logic [`XLEN-1:0]  rob_dispatch_PC [2];
+    logic [`XLEN-1:0]  rob_dispatch_pred_target [2];
+    logic [TAG_W-1:0]  rob_store_done_tag [2];
+
+    assign rob_dispatch_dest_reg[0]  = dec_has_dest  ? fetched_inst.r.rd  : 5'd0;
+    assign rob_dispatch_dest_reg[1]  = dec1_has_dest ? fetched_inst1.r.rd : 5'd0;
+    assign rob_dispatch_NPC[0]       = fetched_NPC;
+    assign rob_dispatch_NPC[1]       = fetched_NPC1;
+    assign rob_dispatch_PC[0]        = PC_reg;
+    assign rob_dispatch_PC[1]        = fetched_NPC;
+    assign rob_dispatch_pred_target[0] = (dec_cond_branch || dec_uncond_branch) ? pred_target : 32'b0;
+    assign rob_dispatch_pred_target[1] = 32'b0;
+    assign rob_store_done_tag[0]     = lsq_store_ready_tag;
+    assign rob_store_done_tag[1]     = rob_commit_tag[0];
+
     rob rob_0 (
         .clock                (clock),
         .reset                (reset),
         .flush                (mispredict_valid),
 
         .dispatch_valid       ({dispatch_fire1, dispatch_fire}),
-        .dispatch_dest_reg    ('{(dec_has_dest ? fetched_inst.r.rd : 5'd0), (dec1_has_dest ? fetched_inst1.r.rd : 5'd0)}),
-        .dispatch_NPC         ('{fetched_NPC, fetched_NPC1}),
-        .dispatch_PC          ('{PC_reg, fetched_NPC}),
+        .dispatch_dest_reg    (rob_dispatch_dest_reg),
+        .dispatch_NPC         (rob_dispatch_NPC),
+        .dispatch_PC          (rob_dispatch_PC),
         .dispatch_halt        ({dec1_halt, dec_halt}),
         .dispatch_illegal     ({dec1_illegal, dec_illegal}),
         .dispatch_is_branch   ({(dec1_cond_branch || dec1_uncond_branch), (dec_cond_branch || dec_uncond_branch)}),
@@ -716,7 +734,7 @@ module pipeline (
 
         // Only slot0 uses predictor metadata in this minimal 2-wide frontend.
         .dispatch_predicted_taken  ({1'b0, ((dec_cond_branch || dec_uncond_branch) && pred_valid && pred_taken)}),
-        .dispatch_predicted_target ('{((dec_cond_branch || dec_uncond_branch) ? pred_target : 32'b0), 32'b0}),
+        .dispatch_predicted_target (rob_dispatch_pred_target),
 
         .rob_full             (rob_full),
         .rob_almost_full      (rob_almost_full),
@@ -729,7 +747,7 @@ module pipeline (
         .cdb_branch_target    (cdb_branch_target),
 
         .store_done_valid     ({1'b0, lsq_store_ready_valid}),
-        .store_done_tag       ('{lsq_store_ready_tag, rob_commit_tag[0]}),
+        .store_done_tag       (rob_store_done_tag),
 
         .commit_valid         (rob_commit_valid),
         .commit_tag           (rob_commit_tag),
@@ -776,26 +794,56 @@ module pipeline (
     // ================================================================
     // RS - non-memory ops only
     // ================================================================
+    // Intermediate wires to avoid '{}' patterns unsupported by DC synthesis
+    logic [7:0]        rs_dispatch_op [2];
+    logic [TAG_W-1:0]  rs_dispatch_dest_tag [2];
+    logic [TAG_W-1:0]  rs_dispatch_src1_tag [2];
+    logic [`XLEN-1:0]  rs_dispatch_src1_value [2];
+    logic [TAG_W-1:0]  rs_dispatch_src2_tag [2];
+    logic [`XLEN-1:0]  rs_dispatch_src2_value [2];
+    logic [2:0]        rs_dispatch_branch_funct3 [2];
+    logic [`XLEN-1:0]  rs_dispatch_branch_target [2];
+    logic [`XLEN-1:0]  rs_dispatch_branch_NPC [2];
+
+    assign rs_dispatch_op[0]            = dispatch_op;
+    assign rs_dispatch_op[1]            = dispatch1_op;
+    assign rs_dispatch_dest_tag[0]      = rob_dispatch_tag[0];
+    assign rs_dispatch_dest_tag[1]      = rob_dispatch_tag[1];
+    assign rs_dispatch_src1_tag[0]      = dispatch_src1_tag;
+    assign rs_dispatch_src1_tag[1]      = dispatch1_src1_tag;
+    assign rs_dispatch_src1_value[0]    = dispatch_src1_value;
+    assign rs_dispatch_src1_value[1]    = dispatch1_src1_value;
+    assign rs_dispatch_src2_tag[0]      = dispatch_src2_tag;
+    assign rs_dispatch_src2_tag[1]      = dispatch1_src2_tag;
+    assign rs_dispatch_src2_value[0]    = dispatch_src2_value;
+    assign rs_dispatch_src2_value[1]    = dispatch1_src2_value;
+    assign rs_dispatch_branch_funct3[0] = dispatch_branch_funct3;
+    assign rs_dispatch_branch_funct3[1] = dispatch1_branch_funct3;
+    assign rs_dispatch_branch_target[0] = dispatch_branch_target;
+    assign rs_dispatch_branch_target[1] = dispatch1_branch_target;
+    assign rs_dispatch_branch_NPC[0]    = fetched_NPC;
+    assign rs_dispatch_branch_NPC[1]    = fetched_NPC1;
+
     rs rs_0 (
         .clock               (clock),
         .reset               (reset),
         .flush               (mispredict_valid),
 
         .dispatch_valid      ({dispatch_fire1, (dispatch_fire && !is_mem_op)}),
-        .dispatch_op         ('{dispatch_op, dispatch1_op}),
-        .dispatch_dest_tag   ('{rob_dispatch_tag[0], rob_dispatch_tag[1]}),
+        .dispatch_op         (rs_dispatch_op),
+        .dispatch_dest_tag   (rs_dispatch_dest_tag),
 
         .dispatch_src1_ready ({dispatch_fire1 ? dispatch1_src1_ready : 1'b0, dispatch_src1_ready}),
-        .dispatch_src1_tag   ('{dispatch_src1_tag, dispatch1_src1_tag}),
-        .dispatch_src1_value ('{dispatch_src1_value, dispatch1_src1_value}),
+        .dispatch_src1_tag   (rs_dispatch_src1_tag),
+        .dispatch_src1_value (rs_dispatch_src1_value),
 
         .dispatch_src2_ready ({dispatch_fire1 ? dispatch1_src2_ready : 1'b0, dispatch_src2_ready}),
-        .dispatch_src2_tag   ('{dispatch_src2_tag, dispatch1_src2_tag}),
-        .dispatch_src2_value ('{dispatch_src2_value, dispatch1_src2_value}),
+        .dispatch_src2_tag   (rs_dispatch_src2_tag),
+        .dispatch_src2_value (rs_dispatch_src2_value),
 
-        .dispatch_branch_funct3 ('{dispatch_branch_funct3, dispatch1_branch_funct3}),
-        .dispatch_branch_target ('{dispatch_branch_target, dispatch1_branch_target}),
-        .dispatch_branch_NPC    ('{fetched_NPC, fetched_NPC1}),
+        .dispatch_branch_funct3 (rs_dispatch_branch_funct3),
+        .dispatch_branch_target (rs_dispatch_branch_target),
+        .dispatch_branch_NPC    (rs_dispatch_branch_NPC),
 
         .rs_full             (rs_full),
         .rs_almost_full      (rs_almost_full),
