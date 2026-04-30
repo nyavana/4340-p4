@@ -307,6 +307,99 @@ working on in parallel.  Design trade-offs, the cycle-by-cycle timing
 diagram, and alternatives considered are in
 [`early-tag-broadcast-report.md`](early-tag-broadcast-report.md).
 
+### 3.8 Week 8: the rest of the advanced features land in one wave
+
+Six teammates had been running their advanced features in parallel
+branches off `milestone3`. Week 8 was about merging them in and
+verifying nothing broke. The branches were `feat-dcache-prefetch`
+(next-line stream-buffer prefetcher), `2_way_superscalar` (dual-issue
+dispatch / commit, the second "difficult" feature), `assoc_cache`
+(2-way set-associative D-cache), `gshare` (full-width GHR XOR
+predictor replacing the bimodal direction table), `feat-ras-cz2931`
+(16-entry Return Address Stack), and `feat-stlf-cz2931` (store-to-load
+forwarding in the LSQ). ETB was already on `milestone3` from week 7.
+A seventh branch, `2_way_syn_and_out`, carried a per-program CPI /
+branch-accuracy comparison file that hadn't been folded back in.
+
+The merges landed in this order on `milestone3`:
+`dcache-prefetch` (`bd78846`) →
+`2_way_superscalar` functional code (`a53ee19`) →
+ETB integration with the new 2-way frontend (`3825a2f`) →
+`gshare` (`e5c1e66`) →
+`feat-ras-cz2931`, which also folded in a gshare GHR variant (`5f3e5e0`) →
+`feat-stlf-cz2931` (`dc484b0`, head of `milestone3`).
+
+The 2-way superscalar tip carried a Design Compiler compatibility fix
+(replacing `'{...}` assignment patterns at port connections with named
+temp arrays) that didn't make it into the merge. The equivalent fix
+was independently re-applied to `milestone3` as `bd719c8`, so the
+synth-clean state landed anyway — the unmerged tip commit is now
+redundant.
+
+We worktreed off `dc484b0` on a branch called `verify-merged-features`,
+cherry-picked the missing comparison file (`96de569
+branch_accuracy_cpi_diff.md`), and ran the full verification suite.
+What came out:
+
+- All 34 programs in `programs/` halt at WFI under both RTL sim
+  (`make simulate_all`) and synthesized gate-level sim
+  (`make simulate_all_syn`).
+- Every `.syn.wb` is byte-identical to its `.wb`. Cycle counts on the
+  synthesized netlist are `RTL + 1` exactly across the board (the
+  canonical Synopsys gate-level reset offset). The merged stack
+  synthesizes to a netlist that is functionally bit-equivalent to the
+  RTL.
+- Cumulative CPI improvement against the April-26 in-tree snapshot
+  (the `+` side of `branch_accuracy_cpi_diff.md`, capturing
+  `milestone3` after 2-way + dcache prefetch but before ETB / gshare /
+  RAS / STLF) ranges from a few percent on the smallest programs to
+  −49.6 % on `alexnet`. Branchy and memory-heavy programs see the
+  largest gains: `mytest` −48.8 %, `btest2` −48.5 %, `sampler`
+  −45.7 %, `priority_queue` −44.3 %, `basic_malloc` −44.0 %, `graph`
+  −43.2 %, `bfs` −40.5 %, `dft` −40.3 %. Nothing regressed.
+- Per-module synth all met timing at the 1000 ps clock. Tightest two:
+  `lsq` at +0.05 ps and `mult` at +0.23 ps. The other five had
+  ≥ +19 ps of slack.
+- Full-pipeline synth (`synth/pipeline.vg`) has a new critical path:
+  `lsq_0/head_reg[1] → mult_0/mstage[0]/product_sum_reg[*]` at
+  −504.66 ps. Three endpoints violate, all in the same LSQ-head →
+  MULT-stage-0 cone. The pre-merge violator was the RS-issue path
+  at −309 ps; STLF added a forward-mux that runs from the LSQ head
+  through the operand-select on the RS issue output and into the MULT
+  stage-0 accumulator, and that path is now longer than the old RS
+  one. Functional gate-level sim is unaffected (it's a static-timing
+  concern, not a glitch path); `synth/pipeline.vg` simply won't run
+  at 1000 ps until the path is registered or the clock is relaxed.
+- Two unit-test infrastructure regressions surfaced.
+  `branch_predictor_test.sv` was written for the bimodal predictor
+  and four of its BHT-counter scenarios fail under gshare: consecutive
+  `do_update` calls land in different counters because gshare indexes
+  by `pc ^ ghr`, so the saturation / transition assertions never hit
+  the same bucket. The RAS scenarios that *were* added with the RAS
+  merge all pass. Real-program branch accuracy is reasonable
+  (60–96 %), so the predictor itself is fine; the test is stale.
+  Separately, `rob.syn.pass`, `rs.syn.pass`, `lsq.syn.pass`, and
+  `icache.syn.pass` no longer build. The first three trip on the
+  2-way `[2]`-array ports: Synopsys DC flattens `logic [4:0]
+  dispatch_dest_reg [2]` into a 10-bit packed bus in the netlist,
+  while the testbenches still declare it as an unpacked array, so
+  the synth-side TBs hit `Error-[PCTM] Port connection type
+  mismatch`. The icache one trips because `icache_test.sv`
+  instantiates `stream_buffer` (added by the prefetcher merge), but
+  the icache synth target doesn't include it. Both are TB-only
+  fixes; the netlists themselves are clean.
+
+Full per-program tables, the verbatim slack endpoints, and the
+recommendation list are in
+[`advanced-features-merge-report.md`](advanced-features-merge-report.md).
+
+Of the six advanced features that landed in this wave, only ETB has
+an in-tree report (`early-tag-broadcast-report.md`). The other five
+(2-way superscalar, dcache prefetch, 2-way associative dcache,
+gshare, RAS, STLF) are functionally integrated and demonstrably
+working but undocumented at the per-feature level — the cumulative
+delta is measured, the per-feature attribution is not.
+
 ---
 
 ## 4. Architecture in one read-through
@@ -1048,18 +1141,75 @@ re-synthesizing the full pipeline is slow.
   stage 0, or a larger `CLOCK_PERIOD`) is a deliberate follow-up,
   not a silent period bump.
 
+**Advanced-features merge wave — week 8 (post-merge verified):**
+
+All six advanced-feature branches that were running in parallel are
+now on `milestone3`:
+
+- `feat-stlf-cz2931` (store-to-load forwarding in the LSQ).
+- `feat-ras-cz2931` (16-entry Return Address Stack hooked into JALR
+  prediction).
+- `gshare` (full-width-GHR XOR direction predictor, replaces the
+  bimodal table; the BTB and RAS sit on top unchanged).
+- `2_way_superscalar` (dual-issue dispatch and commit, the second
+  "difficult" feature alongside ETB).
+- `feat-dcache-prefetch` (next-line stream-buffer prefetcher, also
+  used by the icache).
+- `assoc_cache` (2-way set-associative D-cache).
+
+Verification on a worktree branch (`verify-merged-features`) anchored
+on `milestone3` head `dc484b0`:
+
+- 34 / 34 programs halt at WFI in both RTL sim and synthesized
+  gate-level sim. Every `.syn.wb` is byte-identical to its `.wb`,
+  with cycle counts at `RTL + 1` (the canonical reset offset). The
+  netlist is functionally bit-equivalent to the RTL.
+- Per-module synth all met timing at 1000 ps. Tightest: `lsq` +0.05
+  ps and `mult` +0.23 ps. Headroom on those two is small enough
+  that any future logic on those paths will violate.
+- Full-pipeline synth slack moved from −309.07 ps (pre-merge,
+  RS-src_ready → MULT-stage-0) to **−504.66 ps**, with a new
+  endpoint cone: `lsq_0/head_reg[1] → mult_0/mstage[0]/product_sum_reg[*]`.
+  STLF added a forward-mux that lengthened the LSQ-to-MULT operand
+  path past the old RS one. Three endpoints violate; everything
+  else meets with ≥ +123 ps slack. Same retune options as before
+  (register the new path, or raise `CLOCK_PERIOD`); the deferral
+  in `base-design-verification.md` §4 now applies to the new
+  critical path.
+- Cumulative CPI improvement against the April-26 in-tree snapshot
+  ranges from a few percent on small programs to −49.6 % on
+  `alexnet`. Branchy and memory-heavy programs see the largest
+  gains; nothing regresses.
+- Two test-infrastructure regressions surfaced (not netlist
+  correctness regressions): `branch_predictor.pass` has four stale
+  BHT-counter assertions that pre-date the gshare merge, and four
+  of the `*.syn.pass` builds fail because the testbenches still
+  declare 2-way ports as unpacked arrays while the synthesized
+  netlist flattens them, plus the icache TB pulls in `stream_buffer`
+  which the icache synth target doesn't include. Both are
+  TB-side fixes.
+
+Per-feature reports for the five undocumented features (everything
+except ETB, which has its own write-up) are still owed. The
+cumulative delta is measured; the per-feature attribution is not.
+
+Full numbers, comparison tables, the verbatim violating endpoints,
+and the recommendation list are in
+[`advanced-features-merge-report.md`](advanced-features-merge-report.md).
+
 **Known broken or missing:**
 
-- Store-to-load forwarding is not implemented. The LSQ runs head-only,
-  so a load behind a store pays the full miss latency.
-- There is no Return Address Stack for JALR. Every JALR return with a
-  call-site-dependent target still mispredicts against the BTB's
-  last-committed target, paying one flush per return.
-- The pipeline is one wide. Fetch, decode, dispatch, issue, and commit
-  are all scalar.
-- `synth/pipeline.vg` timing at 1000 ps clock is **not closed** (see
-  above). Per-module synth is green but does not imply full-pipeline
-  closure; the RS→MULT cross-module path is the one that needs work.
+- `synth/pipeline.vg` timing at the 1000 ps clock is **not closed**
+  (see above). Per-module synth is green but does not imply
+  full-pipeline closure. The new critical path is the LSQ-forward
+  mux into MULT stage 0; until it's registered or the clock is
+  relaxed, the netlist is functionally correct but cannot run at
+  1000 ps.
+- Five of the six week-8 advanced features lack per-feature reports.
+  The cumulative speed-up is documented; the per-feature isolation
+  is not.
+- `branch_predictor.pass` and the four `*.syn.pass` builds described
+  above need the test-infra fixes before they go green again.
 
 **Recent addition — early tag broadcast (advanced feature, correctness-only):**
 
@@ -1095,30 +1245,52 @@ re-synthesizing the full pipeline is slow.
 
 ## 9. What is still ahead
 
-The base design is done: ROB / RS / LSQ / D-cache, BTB + bimodal
-predictor, 34/34 programs halting cleanly. What's left is advanced
-features and synthesis closure.
+The base design is signed off and the advanced-features merge wave
+has landed and verified. What's left is closing three concrete gaps.
 
-The proposal calls for two difficult advanced features. Early tag
-broadcast landed in week 7 (see §3.7 and §8) but carries zero
-measurable perf on the current suite because CDB contention swallows
-the one-cycle save — the feature unlocks its speed-up as soon as the
-second CDB lands with superscalar. The remaining difficult feature is
-going 2-way superscalar across fetch, dispatch, issue, and commit, and
-that is where `psel_gen.sv` finally earns its keep. The spec permits a
-second CDB once issue width grows (the "CDB count ≤ superscalar width"
-rule). A teammate is driving superscalar in parallel; ETB is wired to
-hand off cleanly — no restructuring required on the consumer side.
-The proposal targets 16-18 advanced-feature points overall, with at
-least one "difficult" feature implemented; ETB + superscalar is the
-primary path to that target.
+The first is **timing closure on the merged stack**. Full-pipeline
+synth has −504.66 ps worst slack at the 1000 ps clock on the new
+LSQ-forward → MULT-stage-0 path, worse than the pre-merge −309 ps
+that `base-design-verification.md` §4 already deferred. The
+mechanically simplest fix is registering the operand path between the
+LSQ-forward mux and MULT stage 0 — that adds one cycle of latency on
+STLF-forwarded multiplies only, which on real programs is a tiny
+fraction of all multiplies. Alternative is raising `CLOCK_PERIOD`,
+which the project doesn't want to do silently. Neither is a sign-off
+blocker, but one of them needs to land before the final report.
 
-Beyond the difficult features, the proposal lists several simpler ones we
-want to pick up: a more sophisticated branch predictor, store-to-load
-forwarding in the LSQ, instruction or data prefetching, and set-associative
-caches. The full `synth/pipeline.vg` netlist has been built and reported
-(see `doc/base-design-verification.md` §4); what remains is timing closure
-on the RS→MULT stage-0 critical path, which is its own follow-up change.
+The second is the **per-feature documentation gap**. Of the six
+advanced features merged in week 8, only ETB has a write-up
+(`early-tag-broadcast-report.md`). The other five — 2-way superscalar,
+gshare, RAS, STLF, dcache prefetch + stream buffer, and 2-way
+associative dcache — are functionally integrated and demonstrably
+working but undocumented at the per-feature level. The cumulative
+delta is measured (§3.8 and `advanced-features-merge-report.md`);
+the per-feature attribution requires either bisecting the merges or
+adding `+define` ifdefs to disable each feature individually. Each
+report should mirror the structure of `early-tag-broadcast-report.md`:
+design intent, RTL touch points, parameters, unit-test coverage,
+per-program cycle and accuracy delta vs the pre-feature baseline,
+and an honest statement of measured speed-up.
+
+The third is the **unit-test infrastructure refresh**.
+`branch_predictor.pass` has four stale BHT-counter scenarios that
+pre-date the gshare merge; they need to either reset the GHR between
+updates or assert against `bht_idx(pc, ghr)` rather than raw PC.
+`rob.syn.pass`, `rs.syn.pass`, and `lsq.syn.pass` need their
+testbench port connections rewritten to match the netlist's flattened
+2-way buses. `icache.syn.pass` needs `stream_buffer.sv` added to the
+icache synth `SOURCES` (or a TB split that doesn't drag the prefetcher
+into the netlist build). Until these go green, the project's syn-test
+matrix shows 2 / 7 passing instead of the 6 / 7 the RTL side has.
+
+Beyond those three, the proposal targets 16–18 advanced-feature
+points overall with at least one "difficult" feature; both
+"difficult" features (ETB and 2-way superscalar) are now landed,
+and the simpler features (gshare, RAS, STLF, prefetch, set-associative
+cache) cover the rest of the point budget. Whether the cumulative
+score clears the bar is for the per-feature reports to argue once
+they exist.
 
 ---
 
@@ -1135,11 +1307,15 @@ memory-side equivalent, including the commit-time store release.
 stores from round-tripping to memory.
 
 For context, `milestone3-report.md` covers memory bring-up,
-`rs-issue-loop-fix.md` covers the combinational loop that killed about
-fifteen tight-loop programs, `branch-predictor-report.md` covers the
-predictor bring-up and the four integration bugs that surfaced when
-`branch_pending` came off, and `base-design-verification.md` has the
-sign-off numbers. `verilog/branch_predictor.sv` itself is small enough
-to read end-to-end in one sitting. `week3-merge-report.md` and
-`week4-mult_no_lsq-findings.md` are earlier history — skip them unless
+`rs-issue-loop-fix.md` covers the combinational loop that killed
+about fifteen tight-loop programs, `branch-predictor-report.md`
+covers the predictor bring-up and the four integration bugs that
+surfaced when `branch_pending` came off, `base-design-verification.md`
+has the pre-merge sign-off numbers, `early-tag-broadcast-report.md`
+has the ETB write-up, and `advanced-features-merge-report.md` has
+the post-merge verification — pass matrix, slack endpoints, the
+per-program comparison table, and the action list for what's owed.
+`verilog/branch_predictor.sv` itself is small enough to read
+end-to-end in one sitting. `week3-merge-report.md` and
+`week4-mult_no_lsq-findings.md` are earlier history; skip them unless
 you're bisecting an old regression.
