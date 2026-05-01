@@ -362,32 +362,32 @@ What came out:
   ≥ +19 ps of slack.
 - Full-pipeline synth (`synth/pipeline.vg`) has a new critical path:
   `lsq_0/head_reg[1] → mult_0/mstage[0]/product_sum_reg[*]` at
-  −504.66 ps. Three endpoints violate, all in the same LSQ-head →
-  MULT-stage-0 cone. The pre-merge violator was the RS-issue path
-  at −309 ps; STLF added a forward-mux that runs from the LSQ head
-  through the operand-select on the RS issue output and into the MULT
-  stage-0 accumulator, and that path is now longer than the old RS
-  one. Functional gate-level sim is unaffected (it's a static-timing
-  concern, not a glitch path); `synth/pipeline.vg` simply won't run
-  at 1000 ps until the path is registered or the clock is relaxed.
-- Two unit-test infrastructure regressions surfaced.
-  `branch_predictor_test.sv` was written for the bimodal predictor
-  and four of its BHT-counter scenarios fail under gshare: consecutive
-  `do_update` calls land in different counters because gshare indexes
-  by `pc ^ ghr`, so the saturation / transition assertions never hit
-  the same bucket. The RAS scenarios that *were* added with the RAS
-  merge all pass. Real-program branch accuracy is reasonable
-  (60–96 %), so the predictor itself is fine; the test is stale.
-  Separately, `rob.syn.pass`, `rs.syn.pass`, `lsq.syn.pass`, and
-  `icache.syn.pass` no longer build. The first three trip on the
-  2-way `[2]`-array ports: Synopsys DC flattens `logic [4:0]
-  dispatch_dest_reg [2]` into a 10-bit packed bus in the netlist,
-  while the testbenches still declare it as an unpacked array, so
-  the synth-side TBs hit `Error-[PCTM] Port connection type
-  mismatch`. The icache one trips because `icache_test.sv`
-  instantiates `stream_buffer` (added by the prefetcher merge), but
-  the icache synth target doesn't include it. Both are TB-only
-  fixes; the netlists themselves are clean.
+  −244.54 ps after the verify-merged-features pass (−504.66 ps before).
+  Pipelining STLF inside `verilog/lsq.sv` cut about 260 ps; the
+  remaining 244 ps lives inside the MULT-stage-0 multiply tree, not
+  the LSQ side. Three endpoints violate, all in the same cone.
+  Functional gate-level sim is unaffected — every `.syn.wb` matches
+  `.wb` for all 34 programs — so the netlist is correct, just over
+  budget for 1000 ps. Closing it fully would mean either registering
+  `load_complete_value` (one more cycle on every load) or splitting
+  MULT stage 0 (one cycle on every multiply); both were deferred.
+- The four unit-test infrastructure regressions are now fixed
+  (verify-merged-features pass, 2026-04-30).
+  `branch_predictor_test.sv` Tests 2 / 5 / 7 now run against a
+  TB-side gshare model that mirrors GHR + BHT + BTB. Test 7 picks
+  colliding PCs for each update step so `bht_pc_bits(pc_k) ^ ghr_pre_k`
+  always equals a chosen target index, which keeps the original
+  saturate-then-flip semantic intact under gshare. Test 6 was already
+  passing because all-not-takens leaves GHR at 0.
+  `rob.syn.pass`, `rs.syn.pass`, `lsq.syn.pass`, `icache.syn.pass` are
+  green again. The first three use the existing `synth/<m>_svsim.sv`
+  wrappers, which keep unpacked-array ports and repack into the
+  netlist's packed buses with `{>>{ }}`; the Makefile pulls them in
+  as per-target prerequisites of `.syn.simv`, and the testbenches pick
+  `<m>_svsim` instead of `<m>` under `+define+SYNTH`. `lsq_test.sv`
+  also got two `ifndef SYNTH` guards around `dut.count` XMRs.
+  `icache.syn.simv` now lists `verilog/stream_buffer.sv` as an
+  explicit dependency.
 
 Full per-program tables, the verbatim slack endpoints, and the
 recommendation list are in
@@ -1199,17 +1199,28 @@ and the recommendation list are in
 
 **Known broken or missing:**
 
-- `synth/pipeline.vg` timing at the 1000 ps clock is **not closed**
-  (see above). Per-module synth is green but does not imply
-  full-pipeline closure. The new critical path is the LSQ-forward
-  mux into MULT stage 0; until it's registered or the clock is
-  relaxed, the netlist is functionally correct but cannot run at
-  1000 ps.
+- `synth/pipeline.vg` timing at the 1000 ps clock is still **not closed**
+  after the verify-merged-features pass. Worst slack is now −244.54 ps
+  (was −504.66). The remaining 244 ps lives inside the MULT-stage-0
+  multiply tree; the LSQ-side fix (pipelining STLF) bought 260 ps but
+  not enough. The netlist is functionally correct (`.syn.wb` matches
+  `.wb` for all 34 programs), it just cannot run at 1000 ps.
 - Five of the six week-8 advanced features lack per-feature reports.
   The cumulative speed-up is documented; the per-feature isolation
   is not.
-- `branch_predictor.pass` and the four `*.syn.pass` builds described
-  above need the test-infra fixes before they go green again.
+
+**Recently fixed (verify-merged-features, 2026-04-30):**
+
+- `branch_predictor.pass` and `branch_predictor.syn.pass` now pass.
+  Tests 2 / 5 / 7 in `test/branch_predictor_test.sv` were rewritten
+  around a TB-side gshare model.
+- `rob.syn.pass`, `rs.syn.pass`, `lsq.syn.pass`, `icache.syn.pass` all
+  build and pass. The Makefile picks up the existing `*_svsim.sv`
+  wrappers and `verilog/stream_buffer.sv` as per-target prerequisites
+  of `.syn.simv`; the testbenches instantiate the wrapper under
+  `+define+SYNTH`.
+- 7/7 RTL module tests, 7/7 synth module tests, and 34/34 program
+  runs (RTL and synth) all green. Every `.wb` matches its `.syn.wb`.
 
 **Recent addition — early tag broadcast (advanced feature, correctness-only):**
 

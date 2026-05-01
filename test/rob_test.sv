@@ -88,7 +88,14 @@ module rob_test;
   integer error_count;
   integer test_count;
 
+  // In synth flow, instantiate the rob_svsim wrapper which preserves the
+  // unpacked-array port interface and repacks into the .vg netlist's
+  // packed-bus ports via {>>{ }}.  The wrapper is `ifndef SYNTHESIS guarded.
+`ifdef SYNTH
+  rob_svsim dut (
+`else
   rob dut (
+`endif
     .clock(clock),
     .reset(reset),
     .flush(flush),

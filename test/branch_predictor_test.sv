@@ -29,6 +29,8 @@ module branch_predictor_test;
     localparam RAS_ENTRIES = `RAS_ENTRIES;
     localparam BTB_IDX_W   = $clog2(BTB_ENTRIES);
     localparam BHT_IDX_W   = $clog2(BHT_ENTRIES);
+    localparam BTB_TAG_W   = XLEN - 2 - BTB_IDX_W;
+    localparam GHR_W       = BHT_IDX_W;
 
     logic              clock;
     logic              reset;
@@ -104,6 +106,7 @@ module branch_predictor_test;
             reset = 1'b0;
             @(posedge clock);
             #1;
+            mdl_reset();
         end
     endtask
 
@@ -133,6 +136,114 @@ module branch_predictor_test;
         end
     endtask
 
+    // ----------------------------------------------------------------
+    // TB-side gshare reference model.
+    //
+    // Mirrors the RTL state (GHR, BHT, BTB) so tests can assert on the
+    // exact prediction the predictor should produce given the history of
+    // updates so far.  The RTL is gshare: bht_idx = pc[BHT_IDX_W+1:2] ^ ghr,
+    // and ghr shifts on every conditional update.  Hard-coded "still taken"
+    // claims are not recoverable for single-PC sequences, so failing tests
+    // assert "RTL == model" instead.
+    // ----------------------------------------------------------------
+    logic [GHR_W-1:0]     mdl_ghr;
+    logic [1:0]           mdl_bht [BHT_ENTRIES-1:0];
+    logic                 mdl_btb_v   [BTB_ENTRIES-1:0];
+    logic                 mdl_btb_un  [BTB_ENTRIES-1:0];
+    logic [BTB_TAG_W-1:0] mdl_btb_tag [BTB_ENTRIES-1:0];
+    logic [XLEN-1:0]      mdl_btb_tgt [BTB_ENTRIES-1:0];
+
+    function automatic logic [BHT_IDX_W-1:0] mdl_bht_pc_bits(input logic [XLEN-1:0] pc);
+        mdl_bht_pc_bits = pc[BHT_IDX_W+1 : 2];
+    endfunction
+
+    function automatic logic [BTB_IDX_W-1:0] mdl_btb_idx(input logic [XLEN-1:0] pc);
+        mdl_btb_idx = pc[BTB_IDX_W+1 : 2];
+    endfunction
+
+    function automatic logic [BTB_TAG_W-1:0] mdl_btb_tag_of(input logic [XLEN-1:0] pc);
+        mdl_btb_tag_of = pc[XLEN-1 : BTB_IDX_W+2];
+    endfunction
+
+    task automatic mdl_reset;
+        integer j;
+        begin
+            mdl_ghr = '0;
+            for (j = 0; j < BHT_ENTRIES; j = j + 1) mdl_bht[j] = 2'b01;
+            for (j = 0; j < BTB_ENTRIES; j = j + 1) begin
+                mdl_btb_v[j]   = 1'b0;
+                mdl_btb_un[j]  = 1'b0;
+                mdl_btb_tag[j] = '0;
+                mdl_btb_tgt[j] = '0;
+            end
+        end
+    endtask
+
+    task automatic mdl_apply_update;
+        input logic [XLEN-1:0] pc;
+        input logic [XLEN-1:0] target;
+        input logic            taken;
+        input logic            is_uncond;
+        logic [BTB_IDX_W-1:0] bi;
+        logic [BHT_IDX_W-1:0] hi;
+        begin
+            bi = mdl_btb_idx(pc);
+            mdl_btb_v[bi]   = 1'b1;
+            mdl_btb_un[bi]  = is_uncond;
+            mdl_btb_tag[bi] = mdl_btb_tag_of(pc);
+            mdl_btb_tgt[bi] = target;
+            if (!is_uncond) begin
+                hi = mdl_bht_pc_bits(pc) ^ mdl_ghr;
+                if (taken && mdl_bht[hi] != 2'b11)
+                    mdl_bht[hi] = mdl_bht[hi] + 2'b01;
+                if (!taken && mdl_bht[hi] != 2'b00)
+                    mdl_bht[hi] = mdl_bht[hi] - 2'b01;
+                mdl_ghr = {mdl_ghr[GHR_W-2:0], taken};
+            end
+        end
+    endtask
+
+    // Compute (v, t, tgt, un) the predictor should produce at this PC,
+    // given the current model state (BTB/BHT/GHR, no RAS).
+    task automatic mdl_predict;
+        input  logic [XLEN-1:0] pc;
+        output logic            v;
+        output logic            t;
+        output logic [XLEN-1:0] tgt;
+        output logic            un;
+        logic [BTB_IDX_W-1:0] bi;
+        logic [BHT_IDX_W-1:0] hi;
+        logic [BTB_TAG_W-1:0] tg;
+        logic                 hit;
+        begin
+            bi  = mdl_btb_idx(pc);
+            hi  = mdl_bht_pc_bits(pc) ^ mdl_ghr;
+            tg  = mdl_btb_tag_of(pc);
+            hit = mdl_btb_v[bi] && (mdl_btb_tag[bi] == tg);
+            if (hit) begin
+                v   = 1'b1;
+                un  = mdl_btb_un[bi];
+                t   = mdl_btb_un[bi] || mdl_bht[hi][1];
+                tgt = mdl_btb_tgt[bi];
+            end else begin
+                v   = 1'b0;
+                un  = 1'b0;
+                t   = 1'b0;
+                tgt = '0;
+            end
+        end
+    endtask
+
+    // Return the smallest aligned PC whose bht_pc_bits == `target_bits`,
+    // for use in tests that need updates landing on a chosen BHT counter
+    // under gshare's running GHR.  Bit 7 carries the high bit of bht_pc_bits;
+    // bits [6:2] form the low five bits and also serve as btb_idx.  Choosing
+    // tag-bits = 0 keeps every constructed PC inside the same BTB tag space,
+    // so the BTB-direct-mapped collisions in this test are deliberate.
+    function automatic logic [XLEN-1:0] make_pc_for_bht_bits(input logic [BHT_IDX_W-1:0] target_bits);
+        make_pc_for_bht_bits = {{(XLEN-BHT_IDX_W-2){1'b0}}, target_bits, 2'b00};
+    endfunction
+
     // Drive one commit-time update over exactly one posedge.
     task automatic do_update;
         input logic [XLEN-1:0] pc;
@@ -152,6 +263,7 @@ module branch_predictor_test;
             update_target    = '0;
             update_taken     = 1'b0;
             update_is_uncond = 1'b0;
+            mdl_apply_update(pc, target, taken, is_uncond);
         end
     endtask
 
@@ -193,20 +305,29 @@ module branch_predictor_test;
     task automatic test_learn_taken_conditional;
         logic            v, t, un;
         logic [XLEN-1:0] tgt;
+        logic            mv, mt, mun;
+        logic [XLEN-1:0] mtgt;
         begin
             test_count = test_count + 1;
             $display("\n=== Test %0d: learn a taken conditional ===", test_count);
             do_reset();
 
-            // One taken update at PC 0x1000 -> target 0x2000.  Counter starts at 01;
-            // a single taken step -> 10 (weakly taken).
+            // One taken update at PC 0x1000 -> target 0x2000.  The update
+            // increments BHT[bht_pc_bits(0x1000) ^ ghr_pre=0] from 01 to 10
+            // and shifts ghr to 6'b000001.  A subsequent predict at PC 0x1000
+            // therefore reads BHT[0 ^ 1 = 1] (a cold counter), so pred_taken
+            // is 0 -- this is gshare's intended behavior, not a bug.
             do_update(32'h0000_1000, 32'h0000_2000, 1'b1, 1'b0);
 
             do_predict(32'h0000_1000, v, t, tgt, un);
-            check_eq("hit after one taken update", v, 1'b1);
-            check_eq("taken after one taken update", t, 1'b1);
-            check_eq("is_uncond=0 for conditional", un, 1'b0);
-            check_eq32("stored target", tgt, 32'h0000_2000);
+            mdl_predict(32'h0000_1000, mv, mt, mtgt, mun);
+            check_eq("hit after one taken update", v, mv);
+            check_eq("pred_taken matches gshare model", t, mt);
+            check_eq("is_uncond matches model", un, mun);
+            check_eq32("stored target", tgt, mtgt);
+            // The update did install the BTB entry.
+            check_eq("model: BTB hit recorded", mv, 1'b1);
+            check_eq32("model: stored target = 0x2000", mtgt, 32'h0000_2000);
         end
     endtask
 
@@ -252,24 +373,31 @@ module branch_predictor_test;
     task automatic test_saturate_high;
         logic            v, t, un;
         logic [XLEN-1:0] tgt;
+        logic            mv, mt, mun;
+        logic [XLEN-1:0] mtgt;
         integer          k;
         begin
             test_count = test_count + 1;
-            $display("\n=== Test %0d: counter saturates at 11 on repeated taken ===", test_count);
+            $display("\n=== Test %0d: repeated taken at single PC, gshare path ===", test_count);
             do_reset();
 
-            // Drive six taken updates (well past saturation).
+            // Six taken updates at the same PC.  Each shifts GHR, so the
+            // updates land on six DIFFERENT BHT counters under gshare.  The
+            // single-PC saturation claim doesn't hold; we instead assert the
+            // RTL prediction tracks the gshare model after every step.
             for (k = 0; k < 6; k = k + 1)
                 do_update(32'h0000_5000, 32'h0000_5100, 1'b1, 1'b0);
 
-            // Still predicts taken.
             do_predict(32'h0000_5000, v, t, tgt, un);
-            check_eq("still taken after saturation", t, 1'b1);
+            mdl_predict(32'h0000_5000, mv, mt, mtgt, mun);
+            check_eq("after 6 takens: pred_valid matches model", v, mv);
+            check_eq("after 6 takens: pred_taken matches model", t, mt);
 
-            // One not-taken step should drop from 11 -> 10 => still taken.
+            // One additional not-taken update.
             do_update(32'h0000_5000, 32'h0000_5004, 1'b0, 1'b0);
             do_predict(32'h0000_5000, v, t, tgt, un);
-            check_eq("11 -> 10 still taken", t, 1'b1);
+            mdl_predict(32'h0000_5000, mv, mt, mtgt, mun);
+            check_eq("after +1 not-taken: pred_taken matches model", t, mt);
         end
     endtask
 
@@ -298,24 +426,56 @@ module branch_predictor_test;
     task automatic test_flip_from_11_to_01;
         logic            v, t, un;
         logic [XLEN-1:0] tgt;
+        logic [GHR_W-1:0] eg;
+        logic [XLEN-1:0]  pc_predict_after_nt1;
+        logic [XLEN-1:0]  pc_predict_after_nt2;
         integer          k;
+        // Saturate-then-flip a chosen target counter under gshare by picking
+        // a fresh PC at every step so bht_pc_bits(pc_k) ^ ghr_pre_k always
+        // equals TGT_IDX.  Each conditional update therefore lands on the
+        // same BHT counter regardless of how the GHR has shifted.  The two
+        // post-flip predictions need their own BTB hit, so we install BTB
+        // entries at the predict PCs ahead of time via not-taken updates
+        // (which leave GHR=0 since 0 shifts in 0 unchanged).
+        localparam logic [BHT_IDX_W-1:0] TGT_IDX = 6'd33;
         begin
             test_count = test_count + 1;
-            $display("\n=== Test %0d: flip from 11 to 01 over two not-takens ===", test_count);
+            $display("\n=== Test %0d: flip from 11 to 01 (gshare colliding PCs) ===", test_count);
             do_reset();
 
-            // Saturate up to 11.
-            for (k = 0; k < 4; k = k + 1)
-                do_update(32'h0000_8000, 32'h0000_8200, 1'b1, 1'b0);
+            eg = '0;
 
-            // First not-taken: 11 -> 10 (still taken).
-            do_update(32'h0000_8000, 32'h0000_8004, 1'b0, 1'b0);
-            do_predict(32'h0000_8000, v, t, tgt, un);
+            // After 4 takens + 1 not-taken, GHR = 6'b011110 = 30.
+            // After 4 takens + 2 not-takens, GHR = 6'b111100 = 60.
+            pc_predict_after_nt1 = make_pc_for_bht_bits(TGT_IDX ^ 6'd30);
+            pc_predict_after_nt2 = make_pc_for_bht_bits(TGT_IDX ^ 6'd60);
+
+            // Pre-install BTB entries at the predict PCs.  These hit BHT
+            // indices that are NOT TGT_IDX, so they leave the saturating
+            // counter alone.  GHR stays 0 because 0 shifts in 0.
+            do_update(pc_predict_after_nt1, 32'h0000_8200, 1'b0, 1'b0);
+            do_update(pc_predict_after_nt2, 32'h0000_8200, 1'b0, 1'b0);
+
+            // Four takens, each at a PC that lands the update on BHT[TGT_IDX].
+            for (k = 0; k < 4; k = k + 1) begin
+                do_update(make_pc_for_bht_bits(TGT_IDX ^ eg),
+                          32'h0000_8200, 1'b1, 1'b0);
+                eg = {eg[GHR_W-2:0], 1'b1};
+            end
+
+            // First not-taken at PC chosen to also land on BHT[TGT_IDX].
+            // BHT[TGT_IDX]: 11 -> 10.
+            do_update(make_pc_for_bht_bits(TGT_IDX ^ eg),
+                      32'h0000_8004, 1'b0, 1'b0);
+            eg = {eg[GHR_W-2:0], 1'b0};
+            do_predict(pc_predict_after_nt1, v, t, tgt, un);
             check_eq("after one nt: still taken (10)", t, 1'b1);
 
-            // Second not-taken: 10 -> 01 (not-taken).
-            do_update(32'h0000_8000, 32'h0000_8004, 1'b0, 1'b0);
-            do_predict(32'h0000_8000, v, t, tgt, un);
+            // Second not-taken: BHT[TGT_IDX]: 10 -> 01.
+            do_update(make_pc_for_bht_bits(TGT_IDX ^ eg),
+                      32'h0000_8004, 1'b0, 1'b0);
+            eg = {eg[GHR_W-2:0], 1'b0};
+            do_predict(pc_predict_after_nt2, v, t, tgt, un);
             check_eq("after two nts: not-taken (01)", t, 1'b0);
         end
     endtask

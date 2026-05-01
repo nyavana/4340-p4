@@ -215,6 +215,19 @@ $(call DEPS,lsq): $(LSQ_DEPS)
 BRANCH_PREDICTOR_DEPS =
 $(call DEPS,branch_predictor): $(BRANCH_PREDICTOR_DEPS)
 
+# Synth-only extras for .syn.simv.  Synopsys DC flattens 2-way unpacked
+# array ports into packed buses in the .vg netlist (e.g. `dispatch_dest_reg
+# [2]` becomes `[9:0]`).  The pre-generated synth/<m>_svsim.sv wrappers keep
+# the unpacked-array interface the testbench expects and use {>>{ }} to
+# repack into the netlist's bus form.  The testbench instantiates
+# `<m>_svsim` instead of `<m>` when +define+SYNTH is set.
+rob.syn.simv:    synth/rob_svsim.sv
+rs.syn.simv:     synth/rs_svsim.sv
+lsq.syn.simv:    synth/lsq_svsim.sv
+# icache's testbench instantiates stream_buffer alongside the icache DUT;
+# the synth flow needs the RTL stream_buffer linked into the executable.
+icache.syn.simv: verilog/stream_buffer.sv
+
 # This allows you to use the following make targets:
 # make <module>.pass   <- greps for "@@@ Passed" or "@@@ Incorrect" in the output
 # make <module>.out    <- run the testbench (via <module>.simv)

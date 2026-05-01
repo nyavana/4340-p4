@@ -357,8 +357,13 @@ module lsq #(
 
     // -------------------------------------------------------
     // CDB broadcast arbitration: pick oldest ready load that the CDB
-    // has not yet accepted.  Ready = load_buf_valid (cache path) or
-    // stlf_ready (same-cycle forward).
+    // has not yet accepted.  Ready = load_buf_valid only -- forwarded
+    // loads broadcast on the cycle AFTER stlf detection, once the STLF
+    // latch (step 3.5 below) has registered stlf_value into load_buf_*.
+    // This breaks the LSQ-head -> STLF cone -> CDB -> RS-issue-mux ->
+    // MULT-stage-0 critical path that violated timing by 504.66 ps;
+    // forwarded loads now flow through the same registered fast path
+    // as cache hits.
     // -------------------------------------------------------
     logic [IDX_W-1:0] broadcast_pos;
     logic             any_broadcast;
@@ -368,7 +373,7 @@ module lsq #(
         int unsigned pos_u;
         logic [IDX_W-1:0] pos;
         for (int i = 0; i < LSQ_SIZE; i++)
-            buf_ready_comb[i] = (entries[i].load_buf_valid || stlf_ready[i]) &&
+            buf_ready_comb[i] = entries[i].load_buf_valid &&
                                 !entries[i].broadcast_done;
 
         broadcast_pos = '0;
@@ -397,8 +402,7 @@ module lsq #(
     // -------------------------------------------------------
     assign load_complete_valid = any_broadcast;
     assign load_complete_tag   = entries[broadcast_pos].rob_tag;
-    assign load_complete_value = stlf_ready[broadcast_pos] ? stlf_value[broadcast_pos]
-                                                           : entries[broadcast_pos].load_buf_value;
+    assign load_complete_value = entries[broadcast_pos].load_buf_value;
 
     // -------------------------------------------------------
     // Store ready sideband to ROB

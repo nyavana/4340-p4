@@ -89,7 +89,11 @@ module lsq_test;
     // ----------------------------------------------------------------
     // DUT
     // ----------------------------------------------------------------
+`ifdef SYNTH
+    lsq_svsim dut (
+`else
     lsq dut (
+`endif
         .clock               (clock),
         .reset               (reset),
         .flush               (flush),
@@ -608,10 +612,14 @@ module lsq_test;
             check_eq("no dcache_store after race", dcache_store, 1'b0);
             check_eq("no dcache_load after race",  dcache_load,  1'b0);
             check_eq("lsq_full clear",             lsq_full,     1'b0);
+`ifndef SYNTH
+            // Internal-state peek: only available with the RTL hierarchy.
+            // The wrapper used in synth flow does not expose `count`.
             if (dut.count !== '0) begin
                 $display("ERROR: lsq.count nonzero after flush+done race: %0d", dut.count);
                 error_count = error_count + 1;
             end
+`endif
 
             stub_mode = 1'b0;
             idle();
@@ -641,10 +649,12 @@ module lsq_test;
 
             check_eq("no dcache_store after race", dcache_store, 1'b0);
             check_eq("no dcache_load after race",  dcache_load,  1'b0);
+`ifndef SYNTH
             if (dut.count !== '0) begin
                 $display("ERROR: lsq.count nonzero after flush+hit race: %0d", dut.count);
                 error_count = error_count + 1;
             end
+`endif
 
             stub_mode = 1'b0;
             idle();

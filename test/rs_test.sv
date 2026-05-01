@@ -55,7 +55,11 @@ module rs_test;
   integer error_count;
   integer test_count;
 
+`ifdef SYNTH
+  rs_svsim dut (
+`else
   rs dut (
+`endif
     .clock(clock),
     .reset(reset),
     .flush(flush),
