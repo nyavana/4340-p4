@@ -285,7 +285,15 @@ The distinction between functional correctness and static-timing closure matters
 
 ## VIII. Discussion: Limitations and Future Work
 
-[TODO §VIII — drafted in Task 14.]
+The clearest open item is the −244.54 ps full-pipeline slack miss. Two known fixes would close it: register `load_complete_value` at the LSQ output, which adds one cycle to every load, or split MULT stage 0, which adds one cycle to every multiply. Both pay a per-instruction cycle cost on the common path to buy back static-timing headroom that does not affect any program's writeback trace. We deferred them because the design is functionally correct and bit-equivalent at the gate level across all 34 programs, and slowing every load or every multiply against a working system was the wrong trade at the end of the integration window. With more time this is the one limitation we would close.
+
+The LSQ is single-ported on a 2-way machine. Two adjacent loads still serialize at the cache, so the front-end widening is not always matched by back-end memory bandwidth. The natural next step on a wider machine is a dual-ported LSQ paired with a dual-ported or banked D-cache.
+
+A single multiplier has the same shape on the arithmetic side. Multiply-heavy code caps out at one issue per cycle through the multiplier. Early tag broadcast recovers some of this by waking dependent consumers a cycle before the result lands on the bus, but a second multiplier would do better. We did not add one because doubling area for a single functional class was hard to justify against an ablation that suggested the marginal cycles available were small.
+
+The ablation finding itself is worth naming as a design lesson rather than as a disappointment. Once the prefetcher is in place, the simpler features stacked on top of an already-tuned base contribute less on geomean than they would in isolation, because the prefetcher has already taken the cycles they would have saved. The bottleneck on this suite at this clock is memory latency. As an honest data point from earlier in the project: the milestone-2 build with no LSQ froze deterministically at cycle 2192 on `mult_no_lsq`, and landing the LSQ closed the gap. That is why memory ordering became its own structural piece rather than an afterthought.
+
+If we were widening past 2-way, we would revisit the embedded-RAT-in-ROB rename approach: a unified physical register pool in the R10K style would make more sense at four-wide, where the simplicity payoff of treating ROB entries as physical registers starts to fall off.
 
 ## IX. Conclusion
 
