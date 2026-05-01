@@ -84,7 +84,7 @@ After the merge:
   (because `milestone2` was previously unbuildable).
 
 The full merge writeup, including conflict resolution and verification, is in
-[`week3-merge-report.md`](week3-merge-report.md).
+[`week3-merge-report.md`](weekly-reports/week3-merge-report.md).
 
 ### 3.4 Week 4: Milestone 2 stabilization
 
@@ -103,8 +103,8 @@ of the loop, and the first two instructions of the second iteration before it
 freezes. We ruled out the multiplier handshake, the ROB, and the RS in
 isolation. The current suspicion is a combinational cycle or delta-cycle storm
 at the icache / `mem.sv` boundary. Full investigation in
-[`week4-mult_no_lsq-findings.md`](week4-mult_no_lsq-findings.md); the earlier
-debugging plan is in [`week4-followup-plan.md`](week4-followup-plan.md).
+[`week4-mult_no_lsq-findings.md`](weekly-reports/week4-mult_no_lsq-findings.md); the earlier
+debugging plan is in [`week4-followup-plan.md`](weekly-reports/week4-followup-plan.md).
 
 The current canonical state of the project is the `week4-merge-v2` branch on
 `nyavana/4340-p4`, mirrored locally in `4340-p4-week4-merge-m2-v2/`.
@@ -168,8 +168,8 @@ programs (`basic_malloc`, `fc_forward`, `insertionsort`, `omegalul`,
 `priority_queue`) — all of which depend on the JAL/JALR fix. Both
 `make dcache.pass` / `make dcache.syn.pass` and `make lsq.pass` /
 `make lsq.syn.pass` are green. Full per-program results are in
-[`milestone3-results.md`](milestone3-results.md), and the full writeup is
-in [`milestone3-report.md`](milestone3-report.md).
+[`milestone3-results.md`](weekly-reports/milestone3-results.md), and the full writeup is
+in [`milestone3-report.md`](weekly-reports/milestone3-report.md).
 
 The cycle-2192 `mult_no_lsq` hang is still unresolved. It now shares its
 signature with about a dozen other programs that have tight back-to-back
@@ -230,9 +230,9 @@ was root-caused and fixed. The selector now reads the registered
 `entries[i].src*_ready`, not the combinational `_eff`. That fix alone unblocked
 the `mult_no_lsq` cycle-2192 hang and roughly a dozen other tight-loop
 programs from milestone 3. Writeup in
-[`rs-issue-loop-fix.md`](rs-issue-loop-fix.md); the branch-predictor bring-up
+[`rs-issue-loop-fix.md`](base-design/rs-issue-loop-fix.md); the branch-predictor bring-up
 and its four integration bugs are in
-[`branch-predictor-report.md`](branch-predictor-report.md).
+[`branch-predictor-report.md`](base-design/branch-predictor-report.md).
 
 All 34 programs in `programs/` now halt cleanly at `HALTED_ON_WFI`. Using
 `+define+SERIALIZE_BRANCHES` — a diagnostic ifdef in `pipeline.sv` that
@@ -243,7 +243,7 @@ Branch-heavy benchmarks speed up measurably: `fib_rec` −10.5%,
 `insertionsort` −6.4%, `insertion` −6.5%, `sort_search` −5.9%,
 `fc_forward` −4.3%, `outer_product` −3.8%, `quicksort` −3.5%. Nothing
 regresses. Full evidence in
-[`base-design-verification.md`](base-design-verification.md).
+[`base-design-verification.md`](base-design/base-design-verification.md).
 
 The current canonical state of the project is the `milestone4` branch in
 `4340-p4-milestone4/`.
@@ -305,7 +305,7 @@ N+2 whether ETB fired or not.  The mechanism works (unit tests confirm
 for a second CDB to land with 2-way superscalar, which a teammate is
 working on in parallel.  Design trade-offs, the cycle-by-cycle timing
 diagram, and alternatives considered are in
-[`early-tag-broadcast-report.md`](early-tag-broadcast-report.md).
+[`early-tag-broadcast-report.md`](advanced-features/early-tag-broadcast-report.md).
 
 ### 3.8 Week 8: the rest of the advanced features land in one wave
 
@@ -391,14 +391,27 @@ What came out:
 
 Full per-program tables, the verbatim slack endpoints, and the
 recommendation list are in
-[`advanced-features-merge-report.md`](advanced-features-merge-report.md).
+[`advanced-features-merge-report.md`](advanced-features/advanced-features-merge-report.md).
 
-Of the six advanced features that landed in this wave, only ETB has
-an in-tree report (`early-tag-broadcast-report.md`). The other five
-(2-way superscalar, dcache prefetch, 2-way associative dcache,
-gshare, RAS, STLF) are functionally integrated and demonstrably
-working but undocumented at the per-feature level — the cumulative
-delta is measured, the per-feature attribution is not.
+Each advanced feature now has an in-tree per-feature report. They
+are grouped per-module rather than one per merge branch: gshare and
+RAS shipped together in `branch_predictor.sv`, the dcache features
+all live in `dcache.sv` / `stream_buffer.sv`, and the 2-way
+superscalar is its own write-up because it touches every stage.
+
+- [`advanced-features/early-tag-broadcast-report.md`](advanced-features/early-tag-broadcast-report.md)
+- [`advanced-features/superscalar-report.md`](advanced-features/superscalar-report.md)
+- [`advanced-features/branch-predictor-advanced-report.md`](advanced-features/branch-predictor-advanced-report.md) — gshare + RAS
+- [`advanced-features/dcache-advanced-report.md`](advanced-features/dcache-advanced-report.md) — set-associative + next-line prefetch + icache stream buffer
+- [`advanced-features/stlf-report.md`](advanced-features/stlf-report.md)
+
+Per-feature attribution is sometimes ambiguous: gshare and RAS landed
+in the same merge commit, the dcache features came from one branch,
+and the verify-merged-features pass folded the STLF timing fix into
+the same RTL as the original merge. Where attribution is ambiguous
+the reports say so and quote the cumulative §5 numbers from the
+merge report rather than synthesizing per-feature deltas the
+regression cannot prove.
 
 ---
 
@@ -901,7 +914,7 @@ Two ports:
 
 Bring-up details, the four integration bugs removing `branch_pending`
 exposed, and the per-program accuracy numbers are in
-[`branch-predictor-report.md`](branch-predictor-report.md).
+[`branch-predictor-report.md`](base-design/branch-predictor-report.md).
 
 ### 5.14 `verilog/p3/`
 
@@ -1070,9 +1083,9 @@ re-synthesizing the full pipeline is slow.
   Every `.wb` stream is byte-identical to the same commit rebuilt with
   `+define+SERIALIZE_BRANCHES`, so speculation introduces zero
   architectural divergence. The milestone 3 per-program numbers are in
-  [`milestone3-results.md`](milestone3-results.md); the milestone 4
+  [`milestone3-results.md`](weekly-reports/milestone3-results.md); the milestone 4
   sign-off numbers, including the branch-heavy speedups, are in
-  [`base-design-verification.md`](base-design-verification.md).
+  [`base-design-verification.md`](base-design/base-design-verification.md).
 - The full memory subsystem works: byte/half/word RV32IM loads and stores
   through the LSQ and write-back D-cache, with sub-word stores absorbed as
   byte-enable masks. Writebacks only fire on dirty evictions.
@@ -1119,12 +1132,12 @@ re-synthesizing the full pipeline is slow.
   regressed.
 - For the four integration bugs that surfaced during bring-up and
   the full cycle-count table, see
-  [`branch-predictor-report.md`](branch-predictor-report.md).
+  [`branch-predictor-report.md`](base-design/branch-predictor-report.md).
 
 **Base-design sign-off (milestone 4):**
 
 - The base design is signed off. Evidence is in
-  [`doc/base-design-verification.md`](base-design-verification.md):
+  [`doc/base-design/base-design-verification.md`](base-design/base-design-verification.md):
   per-module sim+synth pass matrix with coverage, a 34-program
   regression table, full-pipeline synth slack, and the list of
   intentionally deferred proposal items. Headline: on all 34 programs
@@ -1195,7 +1208,7 @@ cumulative delta is measured; the per-feature attribution is not.
 
 Full numbers, comparison tables, the verbatim violating endpoints,
 and the recommendation list are in
-[`advanced-features-merge-report.md`](advanced-features-merge-report.md).
+[`advanced-features-merge-report.md`](advanced-features/advanced-features-merge-report.md).
 
 **Known broken or missing:**
 
@@ -1250,7 +1263,7 @@ and the recommendation list are in
   adds.
 - Full writeup including the cycle-accurate timing diagram, design
   alternatives, and known limitations is in
-  [`early-tag-broadcast-report.md`](early-tag-broadcast-report.md).
+  [`early-tag-broadcast-report.md`](advanced-features/early-tag-broadcast-report.md).
 
 ---
 

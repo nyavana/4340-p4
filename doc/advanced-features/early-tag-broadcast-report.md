@@ -9,9 +9,9 @@ from pre-ETB on all 34 programs. The mechanism works but CDB
 contention in the 1-wide pipeline swallows the one-cycle save.
 
 This document is the companion report for the change. It lives next to
-[`branch-predictor-report.md`](branch-predictor-report.md) and
-[`rs-issue-loop-fix.md`](rs-issue-loop-fix.md) and is cross-linked from
-[`project-overview.md`](project-overview.md) §3.7.
+[`branch-predictor-report.md`](../base-design/branch-predictor-report.md) and
+[`rs-issue-loop-fix.md`](../base-design/rs-issue-loop-fix.md) and is cross-linked from
+[`project-overview.md`](../project-overview.md) §3.7.
 
 ---
 
@@ -31,7 +31,7 @@ The 1-cycle gap between T and T+1 is the cost of the
 CDB's effect on the same cycle the CDB fires. Without that rule the
 selector closes a combinational loop through the CDB arbiter and hangs
 programs with tight inner loops (~15 programs in milestone 3, see
-[`rs-issue-loop-fix.md`](rs-issue-loop-fix.md)). The rule is
+[`rs-issue-loop-fix.md`](../base-design/rs-issue-loop-fix.md)). The rule is
 load-bearing and stays.
 
 Early tag broadcast closes that gap without touching the selector.
@@ -374,7 +374,7 @@ Tests:
 
 Docs:
 
-- `doc/early-tag-broadcast-report.md`: this file.
+- `doc/advanced-features/early-tag-broadcast-report.md`: this file.
 - `doc/project-overview.md`: §3.7, §8 bullet, §9 paragraph.
 - `README.md`: progress section after the milestone-4 block.
 - `CLAUDE.md`: two bullets in "Current status and what's deferred".

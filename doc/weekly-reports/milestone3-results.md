@@ -5,7 +5,7 @@
 > root cause was a combinational loop in the RS issue selector, not
 > anything in the LSQ. See the [post-fix update](#post-fix-update)
 > section at the bottom of this file and
-> [rs-issue-loop-fix.md](rs-issue-loop-fix.md) for the writeup. The
+> [rs-issue-loop-fix.md](../base-design/rs-issue-loop-fix.md) for the writeup. The
 > tables below are preserved as the record of what shipped under the
 > `milestone3` label (commit `2532ed4`).
 
@@ -163,4 +163,4 @@ pipeline stops when the simulator stops advancing time, and the LSQ
 head with `committed=1` is just where the queue happened to be sitting
 when time froze.
 
-Full writeup: [rs-issue-loop-fix.md](rs-issue-loop-fix.md).
+Full writeup: [rs-issue-loop-fix.md](../base-design/rs-issue-loop-fix.md).

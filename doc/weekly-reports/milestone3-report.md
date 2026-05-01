@@ -46,7 +46,7 @@ The LSQ runs head-only and has no store-to-load forwarding. A load behind an in-
 | `dcache` | pass | pass (slack ≈ 587 ps met) |
 | `lsq`    | pass | pass (slack ≈ 0.44 ps met) |
 
-Full pipeline programs: see `doc/milestone3-results.md` for the per-program table. All 33 of 33 programs now reach `HALTED_ON_WFI`.
+Full pipeline programs: see `milestone3-results.md` for the per-program table. All 33 of 33 programs now reach `HALTED_ON_WFI`.
 
 
 ## Synthesis status
@@ -69,6 +69,6 @@ The fix is one block in `verilog/rs.sv`: the issue selector now reads the regist
 
 Credit for the diagnosis goes to `xh2718` of `CSEE4340-26/p4.GaPiChiXuXu`, whose commit `397ea7d` contains the same comment now sitting above our issue selector. Their commit did several other unrelated things for an earlier-milestone tree; only the `rs.sv` selector change was applicable here.
 
-Full writeup, including the loop diagram, the cycle-2192 trace, the per-program before/after table, and the caveat about what "halts cleanly" does and doesn't verify, is in [doc/rs-issue-loop-fix.md](doc/rs-issue-loop-fix.md).
+Full writeup, including the loop diagram, the cycle-2192 trace, the per-program before/after table, and the caveat about what "halts cleanly" does and doesn't verify, is in [`../base-design/rs-issue-loop-fix.md`](../base-design/rs-issue-loop-fix.md).
 
 Commit: `194b97d` on `milestone3` (fast-forward from `2532ed4`).

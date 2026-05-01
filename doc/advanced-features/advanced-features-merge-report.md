@@ -13,7 +13,7 @@ The team carved the work into eight branches on `CSEE4340-26/p4.GaPiChiXuXu`. Th
 | 1 | `feat-dcache-prefetch` | next-line stream-buffer prefetcher | yes (`bd78846`) | Brought in stream-buffer infrastructure that icache also uses. |
 | 2 | `2_way_superscalar` | difficult: dual-issue dispatch / commit | yes (`a53ee19`, functional code only) | Tip commits `35fb896` and `0c5cbd2` weren't pulled, but the DC compatibility fix in `35fb896` was independently re-applied as `bd719c8`, so the synth-clean state landed anyway. |
 | 3 | `assoc_cache` | 2-way set-associative dcache | yes, transitively (tip `6d046a0`) | Reachable through the dcache-prefetch chain. |
-| 4 | `early-tag-broadcast` | difficult: MULT FU early wakeup | yes (`3825a2f`) | The only feature with an in-tree report (`doc/early-tag-broadcast-report.md`). |
+| 4 | `early-tag-broadcast` | difficult: MULT FU early wakeup | yes (`3825a2f`) | The only feature with an in-tree report (`early-tag-broadcast-report.md`). |
 | 5 | `gshare` | full-width-GHR XOR predictor | yes (`e5c1e66`) | Replaces the bimodal direction predictor. |
 | 6 | `feat-ras-cz2931` | 16-entry Return Address Stack | yes (`5f3e5e0`) | Merge title is "RAS + gshare GHR combined". |
 | 7 | `feat-stlf-cz2931` | store-to-load forwarding | yes (`dc484b0`) | Most recent merge, head of `milestone3`. |
@@ -118,7 +118,7 @@ A few small programs show worse branch accuracy (`fib` 86.66 → 61.90 %, `paral
 
 Every `.syn.wb` is byte-identical to its `.wb`. `cmp -s output/<prog>.wb output/<prog>.syn.wb` succeeds on all 34 programs. The synthesized gate-level netlist commits the same architectural register-write stream as the RTL, and every cycle count is exactly RTL + 1 (the standard Synopsys gate-level reset offset).
 
-The committed `output/*.wb` baselines on `upstream/2_way_syn_and_out` (April 26 snapshot) differ from the current run on 31 / 34 programs. Inspecting `no_hazard` shows the current trace prints every retiring instruction while the baseline only printed slot 0; that's consistent with the 2-way commit stage adding a second writeback slot to the printer after the snapshot was taken. The remaining divergences on long programs are loop-iteration value reorderings, not architectural divergence. The sim ↔ syn byte-identity above rules out any speculation-vs-architecture mismatch within the merged stack itself. The right correctness baseline going forward is a `+define+SERIALIZE_BRANCHES` rebuild on this same commit, which is the canonical comparison from `doc/base-design-verification.md` and is the §10.1 follow-up here.
+The committed `output/*.wb` baselines on `upstream/2_way_syn_and_out` (April 26 snapshot) differ from the current run on 31 / 34 programs. Inspecting `no_hazard` shows the current trace prints every retiring instruction while the baseline only printed slot 0; that's consistent with the 2-way commit stage adding a second writeback slot to the printer after the snapshot was taken. The remaining divergences on long programs are loop-iteration value reorderings, not architectural divergence. The sim ↔ syn byte-identity above rules out any speculation-vs-architecture mismatch within the merged stack itself. The right correctness baseline going forward is a `+define+SERIALIZE_BRANCHES` rebuild on this same commit, which is the canonical comparison from `../base-design/base-design-verification.md` and is the §10.1 follow-up here.
 
 ## 6. Full-pipeline synthesis (`synth/pipeline.vg`)
 
@@ -130,7 +130,7 @@ The committed `output/*.wb` baselines on `upstream/2_way_syn_and_out` (April 26 
 | Worst (violated), after STLF pipelining | −244.54 ps | same start/end cone (3 endpoints) |
 | Worst met | +123.30 ps | (best of the in-clock-domain paths) |
 
-Three endpoints violate, all in the same `LSQ-head → MULT-stage-0` cone. Compared to the pre-merge baseline in `doc/base-design-verification.md` §4 (−309.07 ps, worst endpoint on `rs_0/entries_reg[*][src_ready] → mult_0/mstage[0]/product_sum_reg[*]`):
+Three endpoints violate, all in the same `LSQ-head → MULT-stage-0` cone. Compared to the pre-merge baseline in `../base-design/base-design-verification.md` §4 (−309.07 ps, worst endpoint on `rs_0/entries_reg[*][src_ready] → mult_0/mstage[0]/product_sum_reg[*]`):
 
 The critical path moved. It used to be "RS issue-output → MULT stage 0" and is now "LSQ head data → MULT stage 0". The cause was the store-to-load-forwarding mux added by STLF: a forwarded load value could become a multiplier operand, and the combinational path ran from the LSQ head register through the forward comparator and mux, through the operand-select on the RS issue output, and into the MULT stage-0 product accumulator.
 
@@ -148,21 +148,34 @@ Every `.syn.wb` is byte-identical to its `.wb` (`cmp -s` succeeds on all 34). Af
 
 The merged stack synthesizes to a netlist that is functionally bit-equivalent to the RTL across the full regression suite. The slack violation in §6 is a static-timing closure issue, not a correctness one. The design works; it just won't run at 1000 ps without one of the retunes called out there.
 
-## 8. Documentation gap
+## 8. Documentation
 
-Of the six advanced features merged into milestone3, only one has an in-tree report:
+All seven advanced features now have in-tree reports. Related features
+are grouped per-module rather than one file per merge branch — gshare
+and RAS shipped in the same commit and share `branch_predictor.sv`,
+and the dcache features all live in `dcache.sv` / `stream_buffer.sv`.
 
-| Feature | Report exists? |
+| Feature | Report |
 |---|---|
-| early-tag-broadcast | yes (`doc/early-tag-broadcast-report.md`) |
-| 2-way superscalar | no |
-| dcache prefetch (stream buffer) | no |
-| 2-way associative dcache | no |
-| gshare branch predictor | no |
-| Return Address Stack | no |
-| Store-to-Load Forwarding | no |
+| early-tag-broadcast | [`early-tag-broadcast-report.md`](early-tag-broadcast-report.md) |
+| 2-way superscalar | [`superscalar-report.md`](superscalar-report.md) |
+| dcache prefetch (in-FSM next-line) | [`dcache-advanced-report.md`](dcache-advanced-report.md) §3 |
+| icache stream buffer | [`dcache-advanced-report.md`](dcache-advanced-report.md) §4 |
+| 2-way associative dcache | [`dcache-advanced-report.md`](dcache-advanced-report.md) §2 |
+| gshare branch predictor | [`branch-predictor-advanced-report.md`](branch-predictor-advanced-report.md) §2 |
+| Return Address Stack | [`branch-predictor-advanced-report.md`](branch-predictor-advanced-report.md) §3 |
+| Store-to-Load Forwarding | [`stlf-report.md`](stlf-report.md) |
 
-This is the largest deliverable still owed to the proposal. Writing the missing reports is out of scope for this verification pass. Each one should mirror the structure of `early-tag-broadcast-report.md`: design intent, RTL touch points, parameters, unit-test coverage, per-program cycle / CPI / accuracy delta vs the pre-feature baseline, and an honest statement of measured speed-up. The data in §5 is the cumulative delta against the 2026-04-26 baseline; per-feature attribution requires either bisecting the merges or adding `+define` ifdefs to disable each feature individually.
+Each report follows the early-tag-broadcast template: design intent,
+RTL touch points, parameters, unit-test coverage, per-program cycle /
+CPI / accuracy delta against the relevant baseline, and an honest
+statement of what each feature buys in isolation versus what falls
+out of the cumulative regression in §5. Per-feature attribution is
+not always cleanly bisectable — gshare and RAS shipped together,
+the dcache features all came from one branch, and the verify-merged-features
+pass folded the STLF timing fix into the same RTL as the original
+merge. Where attribution is ambiguous the reports say so and quote
+the §5 cumulative numbers.
 
 ## 9. Recommendation
 
@@ -232,4 +245,4 @@ The original §10 listed four next actions. Where they ended up:
 | Re-run with `+define+SERIALIZE_BRANCHES` and check `.wb` byte-identity | Skipped. The sim ↔ syn byte-identity in §5.1 already rules out the underlying concern (speculation-vs-architecture mismatch inside the merged stack), so the value of an explicit SERIALIZE_BRANCHES diff is mostly belt-and-suspenders. |
 | Fix `*.syn.pass` for `rob`, `rs`, `lsq`, `icache`, and `branch_predictor` | Done (§10.1, §10.2). |
 | Address the LSQ → MULT timing violation | Partially done (§10.3): −504.66 → −244.54 ps. The residual is in MULT stage 0 and would need its own pipelining decision. |
-| Write the five missing per-feature reports | Still owed (§8). |
+| Write the missing per-feature reports | Done (§8). Four new reports cover the seven outstanding features, grouped per-module. |

@@ -347,7 +347,7 @@ module rs_test;
       expect_no_issue();
 
       // The RS selector reads the REGISTERED `entries[i].src1_ready`
-      // (see doc/rs-issue-loop-fix.md), so the CDB wake-up takes one
+      // (see doc/base-design/rs-issue-loop-fix.md), so the CDB wake-up takes one
       // cycle to latch before the selector can fire.  On the CDB cycle
       // itself, issue_valid stays 0; on the following cycle it goes
       // high with the woken-up operand value.
@@ -542,7 +542,7 @@ module rs_test;
       // ever read anything other than the registered src_ready bit, the
       // ETB toggle below could pull issue_valid high on the same cycle
       // — closing the same combinational loop documented in
-      // doc/rs-issue-loop-fix.md.
+      // doc/base-design/rs-issue-loop-fix.md.
       dispatch_inst(
         8'hBB,
         3'd8,

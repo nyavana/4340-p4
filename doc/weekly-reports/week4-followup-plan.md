@@ -1,6 +1,6 @@
 # `week4` Follow-up Plan
 
-Plan for the three items left open by the `week3` merge (see `doc/week3-merge-report.md`). All work happens in a new git worktree.
+Plan for the three items left open by the `week3` merge (see `week3-merge-report.md`). All work happens in a new git worktree.
 
 ## Context
 
