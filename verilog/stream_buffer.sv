@@ -79,7 +79,14 @@ module stream_buffer (
 
     // Drive the bus only when outstanding AND the target hasn't just changed
     // (matches icache.sv: stop sending on address change, restart next cycle).
-    assign proc2Pmem_command = (pf_outstanding && !pf_changed) ? BUS_LOAD : BUS_NONE;
+    // DISABLE_PREFETCH: never issue a prefetch request so the stream buffer
+    // is effectively a no-op (demand fetches are unaffected; only the
+    // speculative next-line prefetch is suppressed).
+    `ifndef DISABLE_PREFETCH
+        assign proc2Pmem_command = (pf_outstanding && !pf_changed) ? BUS_LOAD : BUS_NONE;
+    `else
+        assign proc2Pmem_command = BUS_NONE;
+    `endif
     assign proc2Pmem_addr    = pf_addr;
 
     // Fetch-stage bypass: valid only when demand_addr exactly matches what we buffered

@@ -122,7 +122,13 @@ module branch_predictor #(
     logic [GHR_W-1:0]     ghr;
     logic [BHT_IDX_W-1:0] ghr_ext;
 
-    assign ghr_ext = ghr;
+    // DISABLE_GSHARE: force ghr_ext to zero so BHT index degenerates to
+    // pure-PC (bimodal-equivalent) indexing without changing any other logic.
+    `ifndef DISABLE_GSHARE
+        assign ghr_ext = ghr;
+    `else
+        assign ghr_ext = '0;
+    `endif
 
     // ------------------------------------------------------------------
     // RAS storage.  ras_sp = next-push slot (top = ras_sp - 1).
@@ -163,7 +169,12 @@ module branch_predictor #(
     assign btb_pred_target    = btb[pred_btb_i].target;
 
     // RAS override: on a return with non-empty stack, use ras[top].
-    wire ras_override = predict_is_return && ras_has_entry;
+    // DISABLE_RAS: force ras_override=0 so returns fall through to BTB.
+    `ifndef DISABLE_RAS
+        wire ras_override = predict_is_return && ras_has_entry;
+    `else
+        wire ras_override = 1'b0;
+    `endif
 
     assign pred_valid     = ras_override ? 1'b1 : btb_pred_valid;
     assign pred_taken     = ras_override ? 1'b1 : btb_pred_taken;

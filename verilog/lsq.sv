@@ -308,7 +308,13 @@ module lsq #(
 
                 load_mask   = lsq_byte_mask(entries[L_pos].addr[2:0],
                                             entries[L_pos].mem_size);
+                // DISABLE_STLF: bypass forwarding check entirely so loads
+                // always wait for the cache.
+                `ifdef DISABLE_STLF
+                can_forward = 1'b0;
+                `else
                 can_forward = 1'b1;
+                `endif
                 found_src   = 1'b0;
                 src_line    = '0;
 
