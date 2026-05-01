@@ -1,5 +1,14 @@
 # Branch Predictor Report
 
+> **Note (2026-04-30):** This report describes the bimodal direction
+> predictor + direct-mapped BTB that shipped with milestone 3. The
+> merged tree on `verify-merged-features` replaces the bimodal BHT
+> with gshare and adds a 16-entry RAS. See
+> [`../advanced-features/branch-predictor-advanced-report.md`](../advanced-features/branch-predictor-advanced-report.md)
+> for the current predictor design. This file is kept as the
+> historical record of the bimodal bring-up and the integration bug
+> hunt.
+
 Status as of 2026-04-17: the predictor is live, the regression is
 green at 34/34, and bring-up turned up four integration bugs that
 are all fixed in this branch (one in `rs.sv` for the JAL/JALR NPC

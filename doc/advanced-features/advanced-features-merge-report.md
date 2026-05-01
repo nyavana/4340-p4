@@ -148,21 +148,34 @@ Every `.syn.wb` is byte-identical to its `.wb` (`cmp -s` succeeds on all 34). Af
 
 The merged stack synthesizes to a netlist that is functionally bit-equivalent to the RTL across the full regression suite. The slack violation in §6 is a static-timing closure issue, not a correctness one. The design works; it just won't run at 1000 ps without one of the retunes called out there.
 
-## 8. Documentation gap
+## 8. Documentation
 
-Of the six advanced features merged into milestone3, only one has an in-tree report:
+All seven advanced features now have in-tree reports. Related features
+are grouped per-module rather than one file per merge branch — gshare
+and RAS shipped in the same commit and share `branch_predictor.sv`,
+and the dcache features all live in `dcache.sv` / `stream_buffer.sv`.
 
-| Feature | Report exists? |
+| Feature | Report |
 |---|---|
-| early-tag-broadcast | yes (`early-tag-broadcast-report.md`) |
-| 2-way superscalar | no |
-| dcache prefetch (stream buffer) | no |
-| 2-way associative dcache | no |
-| gshare branch predictor | no |
-| Return Address Stack | no |
-| Store-to-Load Forwarding | no |
+| early-tag-broadcast | [`early-tag-broadcast-report.md`](early-tag-broadcast-report.md) |
+| 2-way superscalar | [`superscalar-report.md`](superscalar-report.md) |
+| dcache prefetch (in-FSM next-line) | [`dcache-advanced-report.md`](dcache-advanced-report.md) §3 |
+| icache stream buffer | [`dcache-advanced-report.md`](dcache-advanced-report.md) §4 |
+| 2-way associative dcache | [`dcache-advanced-report.md`](dcache-advanced-report.md) §2 |
+| gshare branch predictor | [`branch-predictor-advanced-report.md`](branch-predictor-advanced-report.md) §2 |
+| Return Address Stack | [`branch-predictor-advanced-report.md`](branch-predictor-advanced-report.md) §3 |
+| Store-to-Load Forwarding | [`stlf-report.md`](stlf-report.md) |
 
-This is the largest deliverable still owed to the proposal. Writing the missing reports is out of scope for this verification pass. Each one should mirror the structure of `early-tag-broadcast-report.md`: design intent, RTL touch points, parameters, unit-test coverage, per-program cycle / CPI / accuracy delta vs the pre-feature baseline, and an honest statement of measured speed-up. The data in §5 is the cumulative delta against the 2026-04-26 baseline; per-feature attribution requires either bisecting the merges or adding `+define` ifdefs to disable each feature individually.
+Each report follows the early-tag-broadcast template: design intent,
+RTL touch points, parameters, unit-test coverage, per-program cycle /
+CPI / accuracy delta against the relevant baseline, and an honest
+statement of what each feature buys in isolation versus what falls
+out of the cumulative regression in §5. Per-feature attribution is
+not always cleanly bisectable — gshare and RAS shipped together,
+the dcache features all came from one branch, and the verify-merged-features
+pass folded the STLF timing fix into the same RTL as the original
+merge. Where attribution is ambiguous the reports say so and quote
+the §5 cumulative numbers.
 
 ## 9. Recommendation
 
@@ -232,4 +245,4 @@ The original §10 listed four next actions. Where they ended up:
 | Re-run with `+define+SERIALIZE_BRANCHES` and check `.wb` byte-identity | Skipped. The sim ↔ syn byte-identity in §5.1 already rules out the underlying concern (speculation-vs-architecture mismatch inside the merged stack), so the value of an explicit SERIALIZE_BRANCHES diff is mostly belt-and-suspenders. |
 | Fix `*.syn.pass` for `rob`, `rs`, `lsq`, `icache`, and `branch_predictor` | Done (§10.1, §10.2). |
 | Address the LSQ → MULT timing violation | Partially done (§10.3): −504.66 → −244.54 ps. The residual is in MULT stage 0 and would need its own pipelining decision. |
-| Write the five missing per-feature reports | Still owed (§8). |
+| Write the missing per-feature reports | Done (§8). Four new reports cover the seven outstanding features, grouped per-module. |

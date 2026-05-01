@@ -393,12 +393,25 @@ Full per-program tables, the verbatim slack endpoints, and the
 recommendation list are in
 [`advanced-features-merge-report.md`](advanced-features/advanced-features-merge-report.md).
 
-Of the six advanced features that landed in this wave, only ETB has
-an in-tree report (`early-tag-broadcast-report.md`). The other five
-(2-way superscalar, dcache prefetch, 2-way associative dcache,
-gshare, RAS, STLF) are functionally integrated and demonstrably
-working but undocumented at the per-feature level — the cumulative
-delta is measured, the per-feature attribution is not.
+Each advanced feature now has an in-tree per-feature report. They
+are grouped per-module rather than one per merge branch: gshare and
+RAS shipped together in `branch_predictor.sv`, the dcache features
+all live in `dcache.sv` / `stream_buffer.sv`, and the 2-way
+superscalar is its own write-up because it touches every stage.
+
+- [`advanced-features/early-tag-broadcast-report.md`](advanced-features/early-tag-broadcast-report.md)
+- [`advanced-features/superscalar-report.md`](advanced-features/superscalar-report.md)
+- [`advanced-features/branch-predictor-advanced-report.md`](advanced-features/branch-predictor-advanced-report.md) — gshare + RAS
+- [`advanced-features/dcache-advanced-report.md`](advanced-features/dcache-advanced-report.md) — set-associative + next-line prefetch + icache stream buffer
+- [`advanced-features/stlf-report.md`](advanced-features/stlf-report.md)
+
+Per-feature attribution is sometimes ambiguous: gshare and RAS landed
+in the same merge commit, the dcache features came from one branch,
+and the verify-merged-features pass folded the STLF timing fix into
+the same RTL as the original merge. Where attribution is ambiguous
+the reports say so and quote the cumulative §5 numbers from the
+merge report rather than synthesizing per-feature deltas the
+regression cannot prove.
 
 ---
 
