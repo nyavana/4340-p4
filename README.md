@@ -456,3 +456,43 @@ old front-end serialization. They are written up in full in the
 For the module design, full cycle-count table, prediction accuracy
 numbers, and known limitations (no RAS, direct-mapped BTB), see
 [`doc/branch-predictor-report.md`](doc/branch-predictor-report.md).
+
+## Progress: early tag broadcast (advanced feature, correctness-only)
+
+Early tag broadcast (ETB) is one of the two hard features in the
+proposal.  It lets the multiplier raise a one-cycle-early sideband
+naming the ROB tag that will retire on the next CDB cycle, so the RS
+and LSQ can flip the corresponding registered `src*_ready` bits a cycle
+sooner.  The mechanism is wired end-to-end:
+
+- `verilog/mult.sv` exposes `early_done` tapped off the second-to-last
+  `mult_stage`; it pulses exactly one cycle before `done` and carries
+  no value.
+- `verilog/pipeline.sv` drives `{early_cdb_valid, early_cdb_tag}` from
+  `mult_0.early_done && !mult_flushed && !mispredict_valid`, gated at
+  the producer so a flushed multiply cannot wake re-issued consumers.
+- `verilog/rs.sv` and `verilog/lsq.sv` add `src*_val_present` /
+  `base_val_present` / `data_val_present` bits so the value-mux knows
+  when the registered `*_ready` was flipped by ETB alone (value still
+  landing via the real CDB next cycle).  The RS issue selector keeps
+  reading registered readiness only — ETB never feeds the selector
+  combinationally, which preserves the `rs-issue-loop-fix` rule.
+- A `+define+DISABLE_EARLY_TAG` escape hatch at the Makefile level
+  forces the valid bit to 0, keeping the pipeline buildable either way.
+
+Regression: **34/34** programs halt at `WFI` with ETB on and with the
+escape hatch set; every `.wb` file is byte-identical to the
+`SERIALIZE_BRANCHES` sign-off baseline in both modes.  The 6 tested
+modules (`mult`, `rob`, `rs`, `dcache`, `lsq`, `branch_predictor`) pass
+in simulation and synthesis, with new ETB scenarios added to
+`test/mult_test.sv`, `test/rs_test.sv`, and `test/lsq_test.sv`.
+
+Per-program cycle counts are **identical** to the pre-ETB baseline on
+all 34 programs.  The early tag flips `src*_ready` one cycle sooner,
+but CDB arbitration in the current 1-wide pipeline blocks a non-MULT
+consumer from issuing on the cycle MULT broadcasts (`issue_accept` for
+ALU is `!mult_done_valid`), so the consumer still issues on cycle N+2
+whether or not ETB fires.  The speed-up materializes once the second
+CDB arrives with 2-way superscalar (a teammate's in-flight feature).
+Details and the full cycle table are in
+[`doc/early-tag-broadcast-report.md`](doc/early-tag-broadcast-report.md).

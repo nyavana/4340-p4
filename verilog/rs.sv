@@ -2,72 +2,64 @@
 
 module rs #(
     parameter RS_SIZE = `RS_SZ,
+    parameter OP_W    = 8,
     parameter XLEN    = `XLEN,
-    parameter TAG_W   = $clog2(`ROB_SZ),
-    parameter OP_W    = 8
+    parameter TAG_W   = $clog2(`ROB_SZ)
 )(
     input  logic                  clock,
     input  logic                  reset,
-    input  logic                  flush, // flush rs in next posedge
+    input  logic                  flush,
 
-    // dispatch side (input of rs module)
-    input  logic                  dispatch_valid, // if new entry is coming
-    input  logic [OP_W-1:0]       dispatch_op, // op code
-    input  logic [TAG_W-1:0]      dispatch_dest_tag, // destination tag
+    // up to 2 dispatched non-memory ops
+    input  logic [1:0]            dispatch_valid,
+    input  logic [OP_W-1:0]       dispatch_op [2],
+    input  logic [TAG_W-1:0]      dispatch_dest_tag [2],
+    input  logic [1:0]            dispatch_src1_ready,
+    input  logic [TAG_W-1:0]      dispatch_src1_tag [2],
+    input  logic [XLEN-1:0]       dispatch_src1_value [2],
+    input  logic [1:0]            dispatch_src2_ready,
+    input  logic [TAG_W-1:0]      dispatch_src2_tag [2],
+    input  logic [XLEN-1:0]       dispatch_src2_value [2],
+    input  logic [2:0]            dispatch_branch_funct3 [2],
+    input  logic [XLEN-1:0]       dispatch_branch_target [2],
+    input  logic [XLEN-1:0]       dispatch_branch_NPC [2],
 
-    input  logic                  dispatch_src1_ready, // if source 1 already has value
-    input  logic [TAG_W-1:0]      dispatch_src1_tag,
-    input  logic [XLEN-1:0]       dispatch_src1_value,
+    output logic                  rs_full,
+    output logic                  rs_almost_full,
 
-    input  logic                  dispatch_src2_ready, // if source 2 already has value
-    input  logic [TAG_W-1:0]      dispatch_src2_tag,
-    input  logic [XLEN-1:0]       dispatch_src2_value,
+    // dual CDB wakeup
+    input  logic [1:0]            cdb_valid,
+    input  logic [TAG_W-1:0]      cdb_tag [2],
+    input  logic [XLEN-1:0]       cdb_value [2],
 
-    // Per-entry branch metadata carried through the RS.  Non-branches
-    // leave these at 0; the compare / CDB logic gates them on op[5|6].
-    // Previously branch_target_buf and branch_funct3_buf lived as shared
-    // latches in pipeline.sv; moving them in-RS lets multiple branches be
-    // in flight simultaneously.
-    //
-    // branch_NPC is the return address for JAL/JALR (= dispatch PC + 4).
-    // The CDB broadcasts this as cdb_value for uncond branches so any
-    // downstream CDB-bypass consumer sees the correct link register value.
-    input  logic [2:0]            dispatch_branch_funct3,
-    input  logic [XLEN-1:0]       dispatch_branch_target,
-    input  logic [XLEN-1:0]       dispatch_branch_NPC,
+    // Early-tag sideband (wakeup-only, from mult FU)
+    input  logic                  early_cdb_valid,
+    input  logic [TAG_W-1:0]      early_cdb_tag,
 
-    output logic                  rs_full, // if rs is full
-
-    // common data bus wakeup
-    input  logic                  cdb_valid, // if cdb is valid
-    input  logic [TAG_W-1:0]      cdb_tag,
-    input  logic [XLEN-1:0]       cdb_value,
-
-    // issue side (output of rs module)
-    input  logic                  issue_accept, // handshake to another mocule
-    output logic                  issue_valid, // if an entry can be issued
-    output logic [OP_W-1:0]       issue_op, // opcode
-    output logic [TAG_W-1:0]      issue_dest_tag, // destination tag
-    output logic [XLEN-1:0]       issue_src1_value, // source 1 value
-    output logic [XLEN-1:0]       issue_src2_value, // source 2 value
-    output logic [2:0]            issue_branch_funct3,
-    output logic [XLEN-1:0]       issue_branch_target,
-    output logic [XLEN-1:0]       issue_branch_NPC
+    // dual issue
+    input  logic [1:0]            issue_accept,
+    output logic [1:0]            issue_valid,
+    output logic [OP_W-1:0]       issue_op [2],
+    output logic [TAG_W-1:0]      issue_dest_tag [2],
+    output logic [XLEN-1:0]       issue_src1_value [2],
+    output logic [XLEN-1:0]       issue_src2_value [2],
+    output logic [2:0]            issue_branch_funct3 [2],
+    output logic [XLEN-1:0]       issue_branch_target [2],
+    output logic [XLEN-1:0]       issue_branch_NPC [2]
 );
 
     typedef struct packed {
         logic                 busy;
         logic [OP_W-1:0]      op;
         logic [TAG_W-1:0]     dest_tag;
-
         logic                 src1_ready;
+        logic                 src1_val_present;
         logic [TAG_W-1:0]     src1_tag;
         logic [XLEN-1:0]      src1_value;
-
         logic                 src2_ready;
+        logic                 src2_val_present;
         logic [TAG_W-1:0]     src2_tag;
         logic [XLEN-1:0]      src2_value;
-
         logic [2:0]           branch_funct3;
         logic [XLEN-1:0]      branch_target;
         logic [XLEN-1:0]      branch_NPC;
@@ -76,166 +68,181 @@ module rs #(
     rs_entry_t entries [RS_SIZE-1:0];
     rs_entry_t next_entries [RS_SIZE-1:0];
 
-    logic [$clog2(RS_SIZE)-1:0] free_idx;
-    logic [$clog2(RS_SIZE)-1:0] issue_idx;
-    logic                       free_found;
-    logic                       issue_found;
-    logic                       issue_fire;
+    logic [$clog2(RS_SIZE)-1:0] free_idx0, free_idx1;
+    logic                       free_found0, free_found1;
+    logic [$clog2(RS_SIZE)-1:0] issue_idx0, issue_idx1;
+    logic                       issue_found0, issue_found1;
 
-    logic [RS_SIZE-1:0] src1_ready_eff;
-    logic [RS_SIZE-1:0] src2_ready_eff;
+    function automatic logic entry_ready(input rs_entry_t e);
+        begin
+            entry_ready = e.busy && e.src1_ready && e.src2_ready;
+        end
+    endfunction
 
-    // 
 
-    // find first free slot
     always_comb begin
         integer i;
-        
-        free_found = 1'b0;
-        free_idx   = '0;
+        free_found0 = 1'b0; free_idx0 = '0;
+        free_found1 = 1'b0; free_idx1 = '0;
         for (i = 0; i < RS_SIZE; i++) begin
-            if (!free_found && !entries[i].busy) begin
-                free_found = 1'b1;
-                free_idx   = i[$clog2(RS_SIZE)-1:0];
+            if (!free_found0 && !entries[i].busy) begin
+                free_found0 = 1'b1;
+                free_idx0 = i[$clog2(RS_SIZE)-1:0];
+            end else if (!free_found1 && !entries[i].busy) begin
+                free_found1 = 1'b1;
+                free_idx1 = i[$clog2(RS_SIZE)-1:0];
             end
         end
     end
 
-    assign rs_full        = !free_found;
+    assign rs_full        = !free_found0;
+    assign rs_almost_full = !free_found1;
 
-    // effective ready: current ready OR woken up by this cycle's CDB
     always_comb begin
         integer i;
-        
+        issue_found0 = 1'b0; issue_idx0 = '0;
+        issue_found1 = 1'b0; issue_idx1 = '0;
         for (i = 0; i < RS_SIZE; i++) begin
-            src1_ready_eff[i] = entries[i].src1_ready ||
-                                (cdb_valid && entries[i].busy &&
-                                 !entries[i].src1_ready &&
-                                 (entries[i].src1_tag == cdb_tag));
-
-            src2_ready_eff[i] = entries[i].src2_ready ||
-                                (cdb_valid && entries[i].busy &&
-                                 !entries[i].src2_ready &&
-                                 (entries[i].src2_tag == cdb_tag));
-        end
-    end
-
-    // pick first ready entry to issue
-    always_comb begin
-        integer i;
-        
-        issue_found = 1'b0;
-        issue_idx   = '0;
-        for (i = 0; i < RS_SIZE; i++) begin
-            if (!issue_found &&
-                entries[i].busy &&
-                entries[i].src1_ready &&
-                entries[i].src2_ready) begin
-                issue_found = 1'b1;
-                issue_idx   = i[$clog2(RS_SIZE)-1:0];
+            if (!issue_found0 && entry_ready(entries[i])) begin
+                issue_found0 = 1'b1;
+                issue_idx0   = i[$clog2(RS_SIZE)-1:0];
+            end else if (!issue_found1 && entry_ready(entries[i])) begin
+                issue_found1 = 1'b1;
+                issue_idx1   = i[$clog2(RS_SIZE)-1:0];
             end
         end
     end
 
-    assign issue_valid = issue_found;
-    assign issue_fire  = issue_valid && issue_accept;
+    assign issue_valid[0] = issue_found0;
+    assign issue_valid[1] = issue_found1;
 
-    always_comb begin
-        issue_op            = '0;
-        issue_dest_tag      = '0;
-        issue_src1_value    = '0;
-        issue_src2_value    = '0;
-        issue_branch_funct3 = '0;
-        issue_branch_target = '0;
-        issue_branch_NPC    = '0;
-
-        if (issue_found) begin
-            issue_op            = entries[issue_idx].op;
-            issue_dest_tag      = entries[issue_idx].dest_tag;
-            issue_branch_funct3 = entries[issue_idx].branch_funct3;
-            issue_branch_target = entries[issue_idx].branch_target;
-            issue_branch_NPC    = entries[issue_idx].branch_NPC;
-
-            issue_src1_value = (cdb_valid &&
-                                entries[issue_idx].busy &&
-                                !entries[issue_idx].src1_ready &&
-                                (entries[issue_idx].src1_tag == cdb_tag))
-                             ? cdb_value
-                             : entries[issue_idx].src1_value;
-
-            issue_src2_value = (cdb_valid &&
-                                entries[issue_idx].busy &&
-                                !entries[issue_idx].src2_ready &&
-                                (entries[issue_idx].src2_tag == cdb_tag))
-                             ? cdb_value
-                             : entries[issue_idx].src2_value;
+    genvar g;
+    generate
+        for (g = 0; g < 2; g++) begin : GEN_ISSUE_OUT
+            wire [$clog2(RS_SIZE)-1:0] idx = (g == 0) ? issue_idx0 : issue_idx1;
+            always_comb begin
+                integer k;
+                logic [`XLEN-1:0] fwd_val1, fwd_val2;
+                issue_op[g]            = '0;
+                issue_dest_tag[g]      = '0;
+                issue_src1_value[g]    = '0;
+                issue_src2_value[g]    = '0;
+                issue_branch_funct3[g] = '0;
+                issue_branch_target[g] = '0;
+                issue_branch_NPC[g]    = '0;
+                if (issue_valid[g]) begin
+                    issue_op[g]            = entries[idx].op;
+                    issue_dest_tag[g]      = entries[idx].dest_tag;
+                    issue_branch_funct3[g] = entries[idx].branch_funct3;
+                    issue_branch_target[g] = entries[idx].branch_target;
+                    issue_branch_NPC[g]    = entries[idx].branch_NPC;
+                    // ETB val-present forwarding: if value not yet latched,
+                    // forward from whichever CDB slot carries the matching tag.
+                    fwd_val1 = entries[idx].src1_value;
+                    fwd_val2 = entries[idx].src2_value;
+                    for (k = 0; k < 2; k++) begin
+                        if (cdb_valid[k] && cdb_tag[k] == entries[idx].src1_tag)
+                            fwd_val1 = cdb_value[k];
+                        if (cdb_valid[k] && cdb_tag[k] == entries[idx].src2_tag)
+                            fwd_val2 = cdb_value[k];
+                    end
+                    issue_src1_value[g] = entries[idx].src1_val_present ? entries[idx].src1_value : fwd_val1;
+                    issue_src2_value[g] = entries[idx].src2_val_present ? entries[idx].src2_value : fwd_val2;
+                end
+            end
         end
-    end
+    endgenerate
 
     always_comb begin
-        integer i;
-        
+        integer i, k;
+        logic [RS_SIZE-1:0] taken;
+
         next_entries = entries;
+        taken = '0;
 
         if (flush) begin
-            for (i = 0; i < RS_SIZE; i++) begin
+            for (i = 0; i < RS_SIZE; i++)
                 next_entries[i] = '0;
-            end
         end else begin
-            // CDB wakeup
             for (i = 0; i < RS_SIZE; i++) begin
                 if (entries[i].busy) begin
-                    if (cdb_valid && !entries[i].src1_ready &&
-                        (entries[i].src1_tag == cdb_tag)) begin
+                    for (k = 0; k < 2; k++) begin
+                        if (cdb_valid[k] && !next_entries[i].src1_val_present &&
+                            (next_entries[i].src1_tag == cdb_tag[k])) begin
+                            next_entries[i].src1_ready       = 1'b1;
+                            next_entries[i].src1_val_present = 1'b1;
+                            next_entries[i].src1_value       = cdb_value[k];
+                        end
+                        if (cdb_valid[k] && !next_entries[i].src2_val_present &&
+                            (next_entries[i].src2_tag == cdb_tag[k])) begin
+                            next_entries[i].src2_ready       = 1'b1;
+                            next_entries[i].src2_val_present = 1'b1;
+                            next_entries[i].src2_value       = cdb_value[k];
+                        end
+                    end
+                    // Early-tag wakeup: flip src*_ready only (val_present stays 0)
+                    if (early_cdb_valid && !next_entries[i].src1_ready &&
+                        (next_entries[i].src1_tag == early_cdb_tag))
                         next_entries[i].src1_ready = 1'b1;
-                        next_entries[i].src1_value = cdb_value;
-                    end
-
-                    if (cdb_valid && !entries[i].src2_ready &&
-                        (entries[i].src2_tag == cdb_tag)) begin
+                    if (early_cdb_valid && !next_entries[i].src2_ready &&
+                        (next_entries[i].src2_tag == early_cdb_tag))
                         next_entries[i].src2_ready = 1'b1;
-                        next_entries[i].src2_value = cdb_value;
-                    end
                 end
             end
 
-            // remove issued entry
-            if (issue_fire) begin
-                next_entries[issue_idx] = '0;
+            if (issue_valid[0] && issue_accept[0]) begin
+                next_entries[issue_idx0] = '0;
+                taken[issue_idx0] = 1'b1;
+            end
+            if (issue_valid[1] && issue_accept[1] && !taken[issue_idx1]) begin
+                next_entries[issue_idx1] = '0;
+                taken[issue_idx1] = 1'b1;
             end
 
-            // insert new dispatched entry
-            if (dispatch_valid && free_found) begin
-                next_entries[free_idx].busy          = 1'b1;
-                next_entries[free_idx].op            = dispatch_op;
-                next_entries[free_idx].dest_tag      = dispatch_dest_tag;
-
-                next_entries[free_idx].src1_ready    = dispatch_src1_ready;
-                next_entries[free_idx].src1_tag      = dispatch_src1_tag;
-                next_entries[free_idx].src1_value    = dispatch_src1_value;
-
-                next_entries[free_idx].src2_ready    = dispatch_src2_ready;
-                next_entries[free_idx].src2_tag      = dispatch_src2_tag;
-                next_entries[free_idx].src2_value    = dispatch_src2_value;
-
-                next_entries[free_idx].branch_funct3 = dispatch_branch_funct3;
-                next_entries[free_idx].branch_target = dispatch_branch_target;
-                next_entries[free_idx].branch_NPC    = dispatch_branch_NPC;
+            if (dispatch_valid[0] && free_found0) begin
+                next_entries[free_idx0].busy              = 1'b1;
+                next_entries[free_idx0].op                = dispatch_op[0];
+                next_entries[free_idx0].dest_tag          = dispatch_dest_tag[0];
+                next_entries[free_idx0].src1_ready        = dispatch_src1_ready[0];
+                next_entries[free_idx0].src1_val_present  = dispatch_src1_ready[0];
+                next_entries[free_idx0].src1_tag          = dispatch_src1_tag[0];
+                next_entries[free_idx0].src1_value        = dispatch_src1_value[0];
+                next_entries[free_idx0].src2_ready        = dispatch_src2_ready[0];
+                next_entries[free_idx0].src2_val_present  = dispatch_src2_ready[0];
+                next_entries[free_idx0].src2_tag          = dispatch_src2_tag[0];
+                next_entries[free_idx0].src2_value        = dispatch_src2_value[0];
+                next_entries[free_idx0].branch_funct3     = dispatch_branch_funct3[0];
+                next_entries[free_idx0].branch_target     = dispatch_branch_target[0];
+                next_entries[free_idx0].branch_NPC        = dispatch_branch_NPC[0];
+                taken[free_idx0] = 1'b1;
+            end
+            if (dispatch_valid[1] && free_found1) begin
+                next_entries[free_idx1].busy              = 1'b1;
+                next_entries[free_idx1].op                = dispatch_op[1];
+                next_entries[free_idx1].dest_tag          = dispatch_dest_tag[1];
+                next_entries[free_idx1].src1_ready        = dispatch_src1_ready[1];
+                next_entries[free_idx1].src1_val_present  = dispatch_src1_ready[1];
+                next_entries[free_idx1].src1_tag          = dispatch_src1_tag[1];
+                next_entries[free_idx1].src1_value        = dispatch_src1_value[1];
+                next_entries[free_idx1].src2_ready        = dispatch_src2_ready[1];
+                next_entries[free_idx1].src2_val_present  = dispatch_src2_ready[1];
+                next_entries[free_idx1].src2_tag          = dispatch_src2_tag[1];
+                next_entries[free_idx1].src2_value        = dispatch_src2_value[1];
+                next_entries[free_idx1].branch_funct3     = dispatch_branch_funct3[1];
+                next_entries[free_idx1].branch_target     = dispatch_branch_target[1];
+                next_entries[free_idx1].branch_NPC        = dispatch_branch_NPC[1];
             end
         end
     end
 
     always_ff @(posedge clock) begin
         integer i;
-        
         if (reset) begin
-            for (i = 0; i < RS_SIZE; i++) begin
+            for (i = 0; i < RS_SIZE; i++)
                 entries[i] <= '0;
-            end
         end else begin
-            for (i = 0; i < RS_SIZE; i++) begin
+            for (i = 0; i < RS_SIZE; i++)
                 entries[i] <= next_entries[i];
-            end
         end
     end
 

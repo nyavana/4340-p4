@@ -2,7 +2,8 @@
 //                                                                     //
 //   Modulename :  branch_predictor.sv                                 //
 //                                                                     //
-//  Description :  BTB + bimodal direction predictor for the P6 core.  //
+//  Description :  BTB + bimodal direction predictor + RAS for the     //
+//                 P6 core.                                            //
 //                                                                     //
 //                 BTB: direct-mapped, `BTB_ENTRIES` slots, each       //
 //                 {valid, tag, target, is_uncond}, indexed by         //
@@ -15,6 +16,12 @@
 //                 not-taken).  Counters predict taken on states       //
 //                 2'b10 / 2'b11.                                      //
 //                                                                     //
+//                 RAS: `RAS_ENTRIES`-deep circular stack.             //
+//                 ras_push_en writes the link PC; ras_pop_en rewinds  //
+//                 SP.  When predict_is_return and the stack is        //
+//                 non-empty, pred_target comes from ras[top] and      //
+//                 pred_valid/taken are forced high.                   //
+//                                                                     //
 //                 Predict port: combinational lookup on the current   //
 //                 fetch PC, returns {valid, taken, target, is_uncond}.//
 //                                                                     //
@@ -24,6 +31,8 @@
 //                 is_uncond}; BHT counter moves one saturating step   //
 //                 toward the actual direction.                        //
 //                                                                     //
+//        Others : gshare implemented. 
+//                                                                     //
 /////////////////////////////////////////////////////////////////////////
 
 `include "verilog/sys_defs.svh"
@@ -31,6 +40,7 @@
 module branch_predictor #(
     parameter BTB_ENTRIES = `BTB_ENTRIES,
     parameter BHT_ENTRIES = `BHT_ENTRIES,
+    parameter RAS_ENTRIES = `RAS_ENTRIES,
     parameter XLEN        = `XLEN
 )(
     input  logic              clock,
@@ -42,6 +52,12 @@ module branch_predictor #(
     output logic              pred_taken,
     output logic [XLEN-1:0]   pred_target,
     output logic              pred_is_uncond,
+
+    // ---- RAS hints (push/pop gated with dispatch_fire externally) ----
+    input  logic              predict_is_return,
+    input  logic [XLEN-1:0]   predict_link_pc,
+    input  logic              ras_push_en,
+    input  logic              ras_pop_en,
 
     // ---- Update port (registered, one per committing branch) ----
     input  logic              update_valid,
@@ -57,6 +73,7 @@ module branch_predictor #(
     localparam BTB_IDX_W = $clog2(BTB_ENTRIES);
     localparam BHT_IDX_W = $clog2(BHT_ENTRIES);
     localparam BTB_TAG_W = XLEN - 2 - BTB_IDX_W;
+    localparam RAS_IDX_W = $clog2(RAS_ENTRIES);
 
     // ------------------------------------------------------------------
     // Index / tag helpers.  Both tables ignore PC[1:0] (instructions are
@@ -66,12 +83,19 @@ module branch_predictor #(
         btb_idx = pc[BTB_IDX_W+1 : 2];
     endfunction
 
-    function automatic logic [BHT_IDX_W-1:0] bht_idx(input logic [XLEN-1:0] pc);
-        bht_idx = pc[BHT_IDX_W+1 : 2];
-    endfunction
-
     function automatic logic [BTB_TAG_W-1:0] btb_tag(input logic [XLEN-1:0] pc);
         btb_tag = pc[XLEN-1 : BTB_IDX_W+2];
+    endfunction
+    
+    function automatic logic [BHT_IDX_W-1:0] bht_pc_bits(input logic [XLEN-1:0] pc);
+        bht_pc_bits = pc[BHT_IDX_W+1 : 2];
+    endfunction
+
+    function automatic logic [BHT_IDX_W-1:0] bht_idx(
+        input logic [XLEN-1:0] pc,
+        input logic [BHT_IDX_W-1:0] hist
+    );
+        bht_idx = bht_pc_bits(pc) ^ hist;
     endfunction
 
     // ------------------------------------------------------------------
@@ -92,9 +116,27 @@ module branch_predictor #(
     // bias cold forward branches toward fall-through.
     // ------------------------------------------------------------------
     logic [1:0] bht [BHT_ENTRIES-1:0];
+    
+    localparam GHR_W = BHT_IDX_W; // full-width gshare: GHR matches BHT index width
+
+    logic [GHR_W-1:0]     ghr;
+    logic [BHT_IDX_W-1:0] ghr_ext;
+
+    assign ghr_ext = ghr;
 
     // ------------------------------------------------------------------
-    // Combinational prediction lookup
+    // RAS storage.  ras_sp = next-push slot (top = ras_sp - 1).
+    // ras_count tracks depth, saturating at RAS_ENTRIES.
+    // ------------------------------------------------------------------
+    logic [XLEN-1:0]     ras       [RAS_ENTRIES-1:0];
+    logic [RAS_IDX_W-1:0] ras_sp;
+    logic [RAS_IDX_W:0]   ras_count;
+
+    wire [RAS_IDX_W-1:0] ras_top_i = ras_sp - {{(RAS_IDX_W-1){1'b0}}, 1'b1};
+    wire                 ras_has_entry = (ras_count != '0);
+
+    // ------------------------------------------------------------------
+    // Combinational BTB/BHT lookup
     // ------------------------------------------------------------------
     logic [BTB_IDX_W-1:0] pred_btb_i;
     logic [BHT_IDX_W-1:0] pred_bht_i;
@@ -103,19 +145,33 @@ module branch_predictor #(
     logic [1:0]           counter;
 
     assign pred_btb_i = btb_idx(predict_PC);
-    assign pred_bht_i = bht_idx(predict_PC);
+    assign pred_bht_i = bht_idx(predict_PC, ghr_ext);
     assign pred_tag   = btb_tag(predict_PC);
 
     assign btb_hit = btb[pred_btb_i].valid && (btb[pred_btb_i].tag == pred_tag);
     assign counter = bht[pred_bht_i];
 
-    assign pred_valid     = btb_hit;
-    assign pred_is_uncond = btb_hit && btb[pred_btb_i].is_uncond;
-    assign pred_taken     = btb_hit && (btb[pred_btb_i].is_uncond || counter[1]);
-    assign pred_target    = btb[pred_btb_i].target;
+    // BTB-sourced baseline prediction
+    logic              btb_pred_valid;
+    logic              btb_pred_taken;
+    logic [XLEN-1:0]   btb_pred_target;
+    logic              btb_pred_is_uncond;
+
+    assign btb_pred_valid     = btb_hit;
+    assign btb_pred_is_uncond = btb_hit && btb[pred_btb_i].is_uncond;
+    assign btb_pred_taken     = btb_hit && (btb[pred_btb_i].is_uncond || counter[1]);
+    assign btb_pred_target    = btb[pred_btb_i].target;
+
+    // RAS override: on a return with non-empty stack, use ras[top].
+    wire ras_override = predict_is_return && ras_has_entry;
+
+    assign pred_valid     = ras_override ? 1'b1 : btb_pred_valid;
+    assign pred_taken     = ras_override ? 1'b1 : btb_pred_taken;
+    assign pred_is_uncond = ras_override ? 1'b1 : btb_pred_is_uncond;
+    assign pred_target    = ras_override ? ras[ras_top_i] : btb_pred_target;
 
     // ------------------------------------------------------------------
-    // Registered update.  A single update per committing branch:
+    // Registered BTB/BHT update.  A single update per committing branch:
     //   BTB: write {valid=1, tag, target, is_uncond} on any update_valid.
     //        (Conservative: even a not-taken conditional rewrites the
     //        entry; target is what the branch resolved to -- PC+4 for a
@@ -134,7 +190,7 @@ module branch_predictor #(
     logic [1:0]           up_counter_nxt;
 
     assign up_btb_i       = btb_idx(update_PC);
-    assign up_bht_i       = bht_idx(update_PC);
+    assign up_bht_i       = bht_idx(update_PC, ghr_ext);
     assign up_tag         = btb_tag(update_PC);
     assign up_counter_cur = bht[up_bht_i];
 
@@ -145,6 +201,10 @@ module branch_predictor #(
             up_counter_nxt = (up_counter_cur == 2'b00) ? 2'b00 : up_counter_cur - 2'b01;
     end
 
+    // ------------------------------------------------------------------
+    // RAS update.  Simultaneous push+pop pushes without popping.
+    // No rollback on mispredict (speculative-only state).
+    // ------------------------------------------------------------------
     integer i;
     always_ff @(posedge clock) begin
         if (reset) begin
@@ -156,13 +216,36 @@ module branch_predictor #(
             end
             for (i = 0; i < BHT_ENTRIES; i = i + 1)
                 bht[i] <= 2'b01;
-        end else if (update_valid) begin
-            btb[up_btb_i].valid     <= 1'b1;
-            btb[up_btb_i].tag       <= up_tag;
-            btb[up_btb_i].target    <= update_target;
-            btb[up_btb_i].is_uncond <= update_is_uncond;
-            bht[up_bht_i]           <= up_counter_nxt;
+            ghr <= '0;
+            for (i = 0; i < RAS_ENTRIES; i = i + 1)
+                ras[i] <= '0;
+            ras_sp    <= '0;
+            ras_count <= '0;
+        end else begin
+            if (update_valid) begin
+                btb[up_btb_i].valid     <= 1'b1;
+                btb[up_btb_i].tag       <= up_tag;
+                btb[up_btb_i].target    <= update_target;
+                btb[up_btb_i].is_uncond <= update_is_uncond;
+                if (!update_is_uncond) begin
+                    bht[up_bht_i] <= up_counter_nxt;
+                    ghr           <= {ghr[GHR_W-2:0], update_taken};
+                end
+            end
+
+            if (ras_push_en) begin
+                ras[ras_sp] <= predict_link_pc;
+                ras_sp      <= ras_sp + {{(RAS_IDX_W-1){1'b0}}, 1'b1};
+                if (!ras_pop_en && ras_count != RAS_ENTRIES)
+                    ras_count <= ras_count + 1'b1;
+            end else if (ras_pop_en) begin
+                if (ras_has_entry) begin
+                    ras_sp    <= ras_sp - {{(RAS_IDX_W-1){1'b0}}, 1'b1};
+                    ras_count <= ras_count - 1'b1;
+                end
+            end
         end
     end
 
 endmodule
+

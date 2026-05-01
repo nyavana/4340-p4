@@ -454,17 +454,19 @@ module testbench;
                           core.dcache_rd_data);
             end
             // Log every dcache eviction: when transitioning from
-            // IDLE with a dirty valid line being replaced.  Captures
-            // the evict address and data heading to memory.
+            // IDLE with a dirty valid line being replaced.  The
+            // associative dcache exposes the chosen victim as
+            // req_index + victim_way.
             if (core.dcache_0.state == 3'd0 /* DC_IDLE */ &&
                 (core.lsq_0.dcache_load || core.lsq_0.dcache_store) &&
                 !core.dcache_0.hit &&
-                core.dcache_0.dcache_data[core.dcache_0.req_index].valid &&
-                core.dcache_0.dcache_data[core.dcache_0.req_index].dirty) begin
-                $fdisplay(store_fileno, "EVICT idx=%0d tag=%x data=%x (req_addr=%x)",
+                core.dcache_0.dcache_data[core.dcache_0.req_index][core.dcache_0.victim_way].valid &&
+                core.dcache_0.dcache_data[core.dcache_0.req_index][core.dcache_0.victim_way].dirty) begin
+                $fdisplay(store_fileno, "EVICT idx=%0d way=%0d tag=%x data=%x (req_addr=%x)",
                           core.dcache_0.req_index,
-                          core.dcache_0.dcache_data[core.dcache_0.req_index].tags,
-                          core.dcache_0.dcache_data[core.dcache_0.req_index].data,
+                          core.dcache_0.victim_way,
+                          core.dcache_0.dcache_data[core.dcache_0.req_index][core.dcache_0.victim_way].tags,
+                          core.dcache_0.dcache_data[core.dcache_0.req_index][core.dcache_0.victim_way].data,
                           core.lsq_0.dcache_addr);
             end
             // Log every memory-bus BUS_STORE: who wrote what to main
@@ -528,6 +530,10 @@ module testbench;
 `endif // !SYNTH
 
                 show_clk_count;
+`ifndef SYNTH
+                $display("@@  prefetch_hits: %0d demand cycles served by stream buffer",
+                         core.sb_0.prefetch_hit_count);
+`endif
                 // print_close(); // close the pipe_print output file
                 $fclose(wb_fileno);
                 $fclose(store_fileno);

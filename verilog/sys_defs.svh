@@ -21,7 +21,7 @@
 // this is *your* processor, you decide these values (try analyzing which is best!)
 
 // superscalar width
-`define N 1
+`define N 2
 
 // sizes
 `define ROB_SZ 8
@@ -35,21 +35,25 @@
 `define BTB_ENTRIES 32
 `define BHT_ENTRIES 64
 
+// Return address stack depth (power of two).
+`define RAS_ENTRIES 16
+
 `define LSQ_SZ 8
 
-// D-cache geometry: 32 lines x 64 bits = 256 bytes, the cap from the project
-// spec. The cache is direct-mapped, write-back, write-allocate; see
-// verilog/dcache.sv for the state machine.
+// D-cache geometry: 32 total lines x 64 bits = 256 bytes, the cap from the
+// project spec. The current cache keeps that capacity while splitting the
+// lines into 16 sets of 2 ways each.
 `define DCACHE_LINES 32
+`define DCACHE_WAYS  2
 
 // functional units (you should decide if you want more or fewer types of FUs)
-`define NUM_FU_ALU 1
+`define NUM_FU_ALU 2
 `define NUM_FU_MULT 1
 `define NUM_FU_LOAD 1
 `define NUM_FU_STORE 1
 
 // number of mult stages (2, 4, or 8)
-`define MULT_STAGES 4
+`define MULT_STAGES 8
 
 ///////////////////////////////
 // ---- Basic Constants ---- //

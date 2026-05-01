@@ -7,14 +7,11 @@
 //                 operands, computes addresses with an internal AGU,  //
 //                 and arbitrates access to the D-cache.               //
 //                                                                     //
-//                 Memory ordering policy (intentionally conservative  //
-//                 for milestone 3):                                   //
+//                 Memory ordering policy:                             //
 //                                                                     //
 //                   - Only the LSQ head interacts with the D-cache.   //
-//                   - Loads issue as soon as their base operand is    //
-//                     ready (no store-to-load forwarding -- a load    //
-//                     behind an in-flight store waits for the store   //
-//                     to fully drain to the cache).                   //
+//                   - Loads can forward from an older in-queue store  //
+//                     whose byte range fully covers the load.         //
 //                   - Stores hold (addr, data) in the LSQ until the   //
 //                     ROB commits them.  At that point and only then  //
 //                     does the store get released to the D-cache, so  //
@@ -32,7 +29,7 @@
 //                                                                     //
 /////////////////////////////////////////////////////////////////////////
 
-`include "verilog/sys_defs.svh"
+`include "sys_defs.svh"
 
 module lsq #(
     parameter LSQ_SIZE = `LSQ_SZ,
@@ -65,9 +62,16 @@ module lsq #(
     output logic              lsq_full,
 
     // ---- CDB snoop (operand wakeup) ----
-    input  logic              cdb_valid,
-    input  logic [TAG_W-1:0]  cdb_tag,
-    input  logic [XLEN-1:0]   cdb_value,
+    input  logic [1:0]            cdb_valid,
+    input  logic [TAG_W-1:0]      cdb_tag [2],
+    input  logic [XLEN-1:0]       cdb_value [2],
+
+    // ---- Early-tag sideband: wakeup-only, one cycle ahead of CDB. ----
+    // Mirrors the RS rules: flip the matching `*_ready` bit on the
+    // entry, leave `*_value` / `*_val_present` alone.  The actual value
+    // still arrives via the CDB snoop path above the next cycle.
+    input  logic              early_cdb_valid,
+    input  logic [TAG_W-1:0]  early_cdb_tag,
 
     // ---- Sideband to ROB so a store can become commit-ready ----
     output logic              store_ready_valid,
@@ -113,10 +117,16 @@ module lsq #(
         logic              base_ready;
         logic [TAG_W-1:0]  base_tag;
         logic [XLEN-1:0]   base_value;
+        // See rs.sv `src*_val_present` — the ETB path flips
+        // base_ready=1 one cycle before the real value lands.  This bit
+        // tells the AGU not to trust base_value until the CDB snoop
+        // path has latched it.
+        logic              base_val_present;
 
         logic              data_ready;
         logic [TAG_W-1:0]  data_tag;
         logic [XLEN-1:0]   data_value;
+        logic              data_val_present;
 
         logic [XLEN-1:0]   imm;
         logic              addr_valid;
@@ -126,6 +136,7 @@ module lsq #(
         logic              in_flight;        // request handed to D-cache, waiting on done
         logic              load_buf_valid;   // load: data is buffered, waiting for CDB accept
         logic [XLEN-1:0]   load_buf_value;   // sub-word-extracted load result
+        logic              broadcast_done;   // load result already accepted by CDB
         logic [XLEN-1:0]   dbg_pc;           // debug-only: PC of the memory op (unused in logic)
     } lsq_entry_t;
 
@@ -165,13 +176,15 @@ module lsq #(
                                  entries[head].committed;
     wire head_load_releasable  = head_is_load && head_addr_ready;
 
+    // STLF outputs (driven by stlf_compute below).
+    logic [LSQ_SIZE-1:0]    stlf_ready;
+    logic [XLEN-1:0]        stlf_value [LSQ_SIZE-1:0];
+
     // -------------------------------------------------------
     // Drive the D-cache request
-    //
-    // Loads are gated off once load_buf_valid is set so we don't
-    // re-issue a request that already has its result in the buffer.
     // -------------------------------------------------------
-    assign dcache_load  = head_load_releasable && !entries[head].load_buf_valid;
+    assign dcache_load  = head_load_releasable && !entries[head].load_buf_valid &&
+                          !stlf_ready[head];
     assign dcache_store = head_store_releasable;
     assign dcache_addr  = {entries[head].addr[XLEN-1:3], 3'b0};
 
@@ -202,45 +215,179 @@ module lsq #(
     end
 
     // -------------------------------------------------------
-    // Sub-word load extraction
+    // Byte-mask / line-replication / sub-word extract helpers.
     // -------------------------------------------------------
-    logic [7:0]  load_byte_v;
-    logic [15:0] load_half_v;
-    logic [31:0] load_word_v;
+    function automatic logic [7:0] lsq_byte_mask(input logic [2:0] addr_lo,
+                                                 input logic [1:0] size);
+        case (size)
+            2'b00:   lsq_byte_mask = 8'b1    << addr_lo;
+            2'b01:   lsq_byte_mask = 8'b11   << {addr_lo[2:1], 1'b0};
+            2'b10:   lsq_byte_mask = 8'b1111 << {addr_lo[2],   2'b00};
+            default: lsq_byte_mask = 8'hff;
+        endcase
+    endfunction
+
+    function automatic logic [63:0] lsq_store_line(input logic [1:0]       size,
+                                                   input logic [XLEN-1:0]  data_value);
+        case (size)
+            2'b00:   lsq_store_line = {8{data_value[7:0]}};
+            2'b01:   lsq_store_line = {4{data_value[15:0]}};
+            2'b10:   lsq_store_line = {2{data_value[31:0]}};
+            default: lsq_store_line = {32'b0, data_value};
+        endcase
+    endfunction
+
+    function automatic logic [XLEN-1:0] lsq_extract_load(input logic [63:0]       line,
+                                                         input logic [2:0]        addr_lo,
+                                                         input logic [1:0]        size,
+                                                         input logic              is_signed);
+        logic [7:0]  b;
+        logic [15:0] h;
+        logic [31:0] w;
+        case (addr_lo)
+            3'd0:    b = line[7:0];
+            3'd1:    b = line[15:8];
+            3'd2:    b = line[23:16];
+            3'd3:    b = line[31:24];
+            3'd4:    b = line[39:32];
+            3'd5:    b = line[47:40];
+            3'd6:    b = line[55:48];
+            default: b = line[63:56];
+        endcase
+        case (addr_lo[2:1])
+            2'd0:    h = line[15:0];
+            2'd1:    h = line[31:16];
+            2'd2:    h = line[47:32];
+            default: h = line[63:48];
+        endcase
+        w = addr_lo[2] ? line[63:32] : line[31:0];
+        case (size)
+            2'b00:   lsq_extract_load = is_signed ? {{24{b[7]}},   b} : {24'b0, b};
+            2'b01:   lsq_extract_load = is_signed ? {{16{h[15]}}, h} : {16'b0, h};
+            2'b10:   lsq_extract_load = w;
+            default: lsq_extract_load = w;
+        endcase
+    endfunction
+
+    // Head-load extraction off the cache read data.
     logic [XLEN-1:0] load_value_extracted;
+    assign load_value_extracted = lsq_extract_load(dcache_rd_data,
+                                                   entries[head].addr[2:0],
+                                                   entries[head].mem_size,
+                                                   entries[head].is_signed);
 
-    always_comb begin
-        case (entries[head].addr[2:0])
-            3'd0:    load_byte_v = dcache_rd_data[7:0];
-            3'd1:    load_byte_v = dcache_rd_data[15:8];
-            3'd2:    load_byte_v = dcache_rd_data[23:16];
-            3'd3:    load_byte_v = dcache_rd_data[31:24];
-            3'd4:    load_byte_v = dcache_rd_data[39:32];
-            3'd5:    load_byte_v = dcache_rd_data[47:40];
-            3'd6:    load_byte_v = dcache_rd_data[55:48];
-            default: load_byte_v = dcache_rd_data[63:56];
-        endcase
+    // -------------------------------------------------------
+    // Store-to-load forwarding: for each load, scan older entries;
+    // forward from the youngest older store that fully covers the
+    // load bytes on the same 8-byte line.  Any unresolved-addr older
+    // store, or a partial byte overlap, blocks the forward.
+    // -------------------------------------------------------
+    always_comb begin : stlf_compute
+        int unsigned L_pos_u;
+        int unsigned O_pos_u;
+        logic [IDX_W-1:0] L_pos;
+        logic [IDX_W-1:0] O_pos;
+        logic [7:0]       load_mask;
+        logic [7:0]       store_mask;
+        logic [63:0]      src_line;
+        logic             can_forward;
+        logic             found_src;
 
-        case (entries[head].addr[2:1])
-            2'd0:    load_half_v = dcache_rd_data[15:0];
-            2'd1:    load_half_v = dcache_rd_data[31:16];
-            2'd2:    load_half_v = dcache_rd_data[47:32];
-            default: load_half_v = dcache_rd_data[63:48];
-        endcase
+        for (int L = 0; L < LSQ_SIZE; L++) begin
+            stlf_ready[L] = 1'b0;
+            stlf_value[L] = '0;
+        end
 
-        load_word_v = entries[head].addr[2] ? dcache_rd_data[63:32]
-                                            : dcache_rd_data[31:0];
+        for (int k = 0; k < LSQ_SIZE; k++) begin
+            L_pos_u = (head + k) % LSQ_SIZE;
+            L_pos   = L_pos_u[IDX_W-1:0];
 
-        case (entries[head].mem_size)
-            2'b00: load_value_extracted = entries[head].is_signed
-                                          ? {{24{load_byte_v[7]}}, load_byte_v}
-                                          : {24'b0, load_byte_v};
-            2'b01: load_value_extracted = entries[head].is_signed
-                                          ? {{16{load_half_v[15]}}, load_half_v}
-                                          : {16'b0, load_half_v};
-            2'b10: load_value_extracted = load_word_v;
-            default: load_value_extracted = load_word_v;
-        endcase
+            if ({1'b0, k[IDX_W-1:0]} < count &&
+                entries[L_pos].busy && !entries[L_pos].is_store &&
+                entries[L_pos].addr_valid && !entries[L_pos].load_buf_valid) begin
+
+                load_mask   = lsq_byte_mask(entries[L_pos].addr[2:0],
+                                            entries[L_pos].mem_size);
+                can_forward = 1'b1;
+                found_src   = 1'b0;
+                src_line    = '0;
+
+                for (int o = 0; o < LSQ_SIZE; o++) begin
+                    if (o < k) begin
+                        O_pos_u = (head + o) % LSQ_SIZE;
+                        O_pos   = O_pos_u[IDX_W-1:0];
+                        if (entries[O_pos].busy && entries[O_pos].is_store) begin
+                            if (!entries[O_pos].addr_valid) begin
+                                can_forward = 1'b0;
+                            end else begin
+                                store_mask = lsq_byte_mask(entries[O_pos].addr[2:0],
+                                                           entries[O_pos].mem_size);
+                                if (entries[O_pos].addr[XLEN-1:3] ==
+                                    entries[L_pos].addr[XLEN-1:3]) begin
+                                    if ((store_mask & load_mask) != 8'b0) begin
+                                        if ((store_mask & load_mask) == load_mask) begin
+                                            if (!entries[O_pos].data_ready) begin
+                                                can_forward = 1'b0;
+                                            end else begin
+                                                src_line  = lsq_store_line(
+                                                    entries[O_pos].mem_size,
+                                                    entries[O_pos].data_value);
+                                                found_src = 1'b1;
+                                            end
+                                        end else begin
+                                            can_forward = 1'b0;
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+
+                if (can_forward && found_src) begin
+                    stlf_ready[L_pos] = 1'b1;
+                    stlf_value[L_pos] = lsq_extract_load(src_line,
+                                                         entries[L_pos].addr[2:0],
+                                                         entries[L_pos].mem_size,
+                                                         entries[L_pos].is_signed);
+                end
+            end
+        end
+    end
+
+    // -------------------------------------------------------
+    // CDB broadcast arbitration: pick oldest ready load that the CDB
+    // has not yet accepted.  Ready = load_buf_valid only -- forwarded
+    // loads broadcast on the cycle AFTER stlf detection, once the STLF
+    // latch (step 3.5 below) has registered stlf_value into load_buf_*.
+    // This breaks the LSQ-head -> STLF cone -> CDB -> RS-issue-mux ->
+    // MULT-stage-0 critical path that violated timing by 504.66 ps;
+    // forwarded loads now flow through the same registered fast path
+    // as cache hits.
+    // -------------------------------------------------------
+    logic [IDX_W-1:0] broadcast_pos;
+    logic             any_broadcast;
+    logic [LSQ_SIZE-1:0] buf_ready_comb;
+
+    always_comb begin : broadcast_arb
+        int unsigned pos_u;
+        logic [IDX_W-1:0] pos;
+        for (int i = 0; i < LSQ_SIZE; i++)
+            buf_ready_comb[i] = entries[i].load_buf_valid &&
+                                !entries[i].broadcast_done;
+
+        broadcast_pos = '0;
+        any_broadcast = 1'b0;
+        for (int k = 0; k < LSQ_SIZE; k++) begin
+            pos_u = (head + k) % LSQ_SIZE;
+            pos   = pos_u[IDX_W-1:0];
+            if (!any_broadcast && {1'b0, k[IDX_W-1:0]} < count &&
+                entries[pos].busy && !entries[pos].is_store &&
+                buf_ready_comb[pos]) begin
+                broadcast_pos = pos;
+                any_broadcast = 1'b1;
+            end
+        end
     end
 
     // -------------------------------------------------------
@@ -253,9 +400,9 @@ module lsq #(
     // cache-done event from the CDB and prevents the load from being
     // dropped when MULT happens to win arbitration on the same cycle.
     // -------------------------------------------------------
-    assign load_complete_valid = head_is_load && entries[head].load_buf_valid;
-    assign load_complete_tag   = entries[head].rob_tag;
-    assign load_complete_value = entries[head].load_buf_value;
+    assign load_complete_valid = any_broadcast;
+    assign load_complete_tag   = entries[broadcast_pos].rob_tag;
+    assign load_complete_value = entries[broadcast_pos].load_buf_value;
 
     // -------------------------------------------------------
     // Store ready sideband to ROB
@@ -369,28 +516,65 @@ module lsq #(
                 next_count = next_count - 1'b1;
             end
         end else begin
-            // 1) CDB wakeup
+            // 1) CDB wakeup: latches the value AND flips ready +
+            //    val_present in one cycle.  Gated on `!val_present`
+            //    (not `!ready`) so the CDB can still latch the value
+            //    on an entry already woken by the early tag the prior
+            //    cycle (ready=1, val_present=0).  Early-tag wakeup
+            //    (below) is the weaker form: ready flips, val_present
+            //    stays 0.
             for (i = 0; i < LSQ_SIZE; i++) begin
-                if (entries[i].busy && cdb_valid) begin
-                    if (!entries[i].base_ready &&
-                        entries[i].base_tag == cdb_tag) begin
+                if (entries[i].busy) begin
+                    integer k;
+                    for (k = 0; k < 2; k++) begin
+                        if (cdb_valid[k] && !entries[i].base_val_present &&
+                            entries[i].base_tag == cdb_tag[k]) begin
+                            next_entries[i].base_ready       = 1'b1;
+                            next_entries[i].base_val_present = 1'b1;
+                            next_entries[i].base_value       = cdb_value[k];
+                        end
+                        if (entries[i].is_store && cdb_valid[k] &&
+                            !entries[i].data_val_present &&
+                            entries[i].data_tag == cdb_tag[k]) begin
+                            next_entries[i].data_ready       = 1'b1;
+                            next_entries[i].data_val_present = 1'b1;
+                            next_entries[i].data_value       = cdb_value[k];
+                        end
+                    end
+                    // Early-tag wakeup: flip ready only.  The CDB path
+                    // above will latch the value and val_present next cycle.
+                    if (early_cdb_valid && !entries[i].base_ready &&
+                        entries[i].base_tag == early_cdb_tag)
                         next_entries[i].base_ready = 1'b1;
-                        next_entries[i].base_value = cdb_value;
-                    end
-                    if (entries[i].is_store &&
+                    if (early_cdb_valid && entries[i].is_store &&
                         !entries[i].data_ready &&
-                        entries[i].data_tag == cdb_tag) begin
+                        entries[i].data_tag == early_cdb_tag)
                         next_entries[i].data_ready = 1'b1;
-                        next_entries[i].data_value = cdb_value;
-                    end
                 end
             end
 
-            // 2) AGU - use the freshly woken value if any
+            // 2) AGU - use the freshly woken value if any.
+            //
+            // Gated on `next_entries[i].base_val_present` so a load whose
+            // base was woken by the early tag alone (base_ready=1 but
+            // val_present=0) waits one more cycle for the CDB to land
+            // the real value.  The CDB wakeup above updates
+            // next_entries[].base_val_present on the same always_comb
+            // pass, so the AGU fires on the CDB cycle — same timing as
+            // the pre-ETB path, with no new combinational hazard.
+            //
+            // Symmetrical-to-RS note (task 4.5 / design §3): the RS
+            // value-mux has a CDB bypass path for the "ready but not
+            // present" window.  The LSQ does NOT need one functionally
+            // because its CDB wakeup path already folds into
+            // next_entries[].base_val_present before the AGU reads it
+            // — any fully-symmetric mux would just duplicate that
+            // behaviour.  The symmetry is structural, not literal.
             for (i = 0; i < LSQ_SIZE; i++) begin
                 if (next_entries[i].busy &&
                     !next_entries[i].addr_valid &&
-                    next_entries[i].base_ready) begin
+                    next_entries[i].base_ready &&
+                    next_entries[i].base_val_present) begin
                     next_entries[i].addr =
                         next_entries[i].base_value + next_entries[i].imm;
                     next_entries[i].addr_valid = 1'b1;
@@ -401,6 +585,20 @@ module lsq #(
             if (rob_commit_valid && head_is_store &&
                 entries[head].rob_tag == rob_commit_tag) begin
                 next_entries[head].committed = 1'b1;
+            end
+
+            // 3.5) STLF latch
+            for (i = 0; i < LSQ_SIZE; i++) begin
+                if (stlf_ready[i]) begin
+                    next_entries[i].load_buf_valid = 1'b1;
+                    next_entries[i].load_buf_value = stlf_value[i];
+                end
+            end
+
+            // 3.75) Record CDB accept before the head-pop step, so a
+            // simultaneous pop of broadcast_pos==head clears it cleanly.
+            if (load_complete_accept && any_broadcast) begin
+                next_entries[broadcast_pos].broadcast_done = 1'b1;
             end
 
             // 4 + 5) Cache handshake at head
@@ -422,12 +620,15 @@ module lsq #(
                 // Swallow a stale response -- don't let anyone latch it.
                 next_stale_response_count = stale_response_count - 1'b1;
             end else if (entries[head].busy && head_is_load) begin
-                if (entries[head].load_buf_valid) begin
-                    if (load_complete_accept) begin
-                        next_entries[head] = '0;
-                        next_head = (head == IDX_W'(LSQ_SIZE-1)) ? '0 : head + 1'b1;
-                        dec_count = next_count - 1'b1;
-                    end
+                // Pop when this load's CDB broadcast has been/just got accepted.
+                if (entries[head].broadcast_done ||
+                    (load_complete_accept && any_broadcast &&
+                     broadcast_pos == head)) begin
+                    next_entries[head] = '0;
+                    next_head = (head == IDX_W'(LSQ_SIZE-1)) ? '0 : head + 1'b1;
+                    dec_count = next_count - 1'b1;
+                end else if (entries[head].load_buf_valid || stlf_ready[head]) begin
+                    // buffered, waiting for CDB accept
                 end else if (head_load_releasable && dcache_done) begin
                     next_entries[head].load_buf_valid = 1'b1;
                     next_entries[head].load_buf_value = load_value_extracted;
@@ -470,13 +671,15 @@ module lsq #(
                 next_entries[tail].imm        = dispatch_imm;
                 next_entries[tail].dbg_pc     = dispatch_dbg_pc;
 
-                next_entries[tail].base_ready = dispatch_base_ready;
-                next_entries[tail].base_tag   = dispatch_base_tag;
-                next_entries[tail].base_value = dispatch_base_value;
+                next_entries[tail].base_ready       = dispatch_base_ready;
+                next_entries[tail].base_val_present = dispatch_base_ready;
+                next_entries[tail].base_tag         = dispatch_base_tag;
+                next_entries[tail].base_value       = dispatch_base_value;
 
-                next_entries[tail].data_ready = dispatch_data_ready;
-                next_entries[tail].data_tag   = dispatch_data_tag;
-                next_entries[tail].data_value = dispatch_data_value;
+                next_entries[tail].data_ready       = dispatch_data_ready;
+                next_entries[tail].data_val_present = dispatch_data_ready;
+                next_entries[tail].data_tag         = dispatch_data_tag;
+                next_entries[tail].data_value       = dispatch_data_value;
 
                 if (dispatch_base_ready) begin
                     next_entries[tail].addr       =

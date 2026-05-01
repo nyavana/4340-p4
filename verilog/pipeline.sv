@@ -1,5 +1,5 @@
-`include "verilog/sys_defs.svh"
-`include "verilog/ISA.svh"
+`include "sys_defs.svh"
+`include "ISA.svh"
 
 // =====================================================================
 // Pipeline top: 1-wide P6 out-of-order RISC-V core with the milestone-3
@@ -45,8 +45,9 @@ module pipeline (
 
     // PC / fetch
     logic [`XLEN-1:0] PC_reg;
-    INST              fetched_inst;
-    logic [`XLEN-1:0] fetched_NPC;
+    INST              fetched_inst, fetched_inst1;
+    logic [`XLEN-1:0] fetched_NPC, fetched_NPC1;
+    logic             slot1_candidate, slot1_ok, dispatch_fire1;
 
     // Stall / dispatch
     logic branch_pending;
@@ -61,48 +62,54 @@ module pipeline (
     logic             Icache_valid_out;
 
     // Decoder outputs
-    ALU_OPA_SELECT dec_opa_select;
-    ALU_OPB_SELECT dec_opb_select;
-    logic          dec_has_dest;
-    ALU_FUNC       dec_alu_func;
-    logic          dec_rd_mem, dec_wr_mem;
-    logic          dec_cond_branch, dec_uncond_branch;
-    logic          dec_csr_op, dec_halt, dec_illegal;
+    ALU_OPA_SELECT dec_opa_select, dec1_opa_select;
+    ALU_OPB_SELECT dec_opb_select, dec1_opb_select;
+    logic          dec_has_dest, dec1_has_dest;
+    ALU_FUNC       dec_alu_func, dec1_alu_func;
+    logic          dec_rd_mem, dec_wr_mem, dec1_rd_mem, dec1_wr_mem;
+    logic          dec_cond_branch, dec_uncond_branch, dec1_cond_branch, dec1_uncond_branch;
+    logic          dec_csr_op, dec_halt, dec_illegal, dec1_csr_op, dec1_halt, dec1_illegal;
 
     // Regfile outputs
-    logic [`XLEN-1:0] rf_rs1_value, rf_rs2_value;
+    logic [`XLEN-1:0] rf_rs1_value, rf_rs2_value, rf1_rs1_value, rf1_rs2_value;
 
     // ROB outputs
-    logic             rob_full;
-    logic [TAG_W-1:0] rob_dispatch_tag;
-    logic             rob_commit_valid;
-    logic [TAG_W-1:0] rob_commit_tag;
-    logic             rob_commit_is_store;
-    logic [4:0]       rob_commit_dest_reg;
-    logic [`XLEN-1:0] rob_commit_value;
-    logic [`XLEN-1:0] rob_commit_NPC;
-    logic             rob_commit_halt;
-    logic             rob_commit_illegal;
-    logic             rob_commit_is_branch;
-    logic             rob_commit_take_branch;
-    logic [`XLEN-1:0] rob_commit_branch_target;
-    logic             rat_q1_pending, rat_q1_ready;
-    logic [TAG_W-1:0] rat_q1_tag;
-    logic [`XLEN-1:0] rat_q1_value;
-    logic             rat_q2_pending, rat_q2_ready;
-    logic [TAG_W-1:0] rat_q2_tag;
-    logic [`XLEN-1:0] rat_q2_value;
+    logic                   rob_full, rob_almost_full;
+    logic [TAG_W-1:0]       rob_dispatch_tag [2];
+    logic [1:0]             rob_commit_valid;
+    logic [TAG_W-1:0]       rob_commit_tag [2];
+    logic [1:0]             rob_commit_is_store;
+    logic [4:0]             rob_commit_dest_reg [2];
+    logic [`XLEN-1:0]       rob_commit_value [2];
+    logic [`XLEN-1:0]       rob_commit_NPC [2];
+    logic [1:0]             rob_commit_halt;
+    logic [1:0]             rob_commit_illegal;
+    logic [1:0]             rob_commit_is_branch;
+    logic [1:0]             rob_commit_take_branch;
+    logic [`XLEN-1:0]       rob_commit_branch_target [2];
+    logic                   rat_q1_pending, rat_q1_ready;
+    logic [TAG_W-1:0]       rat_q1_tag;
+    logic [`XLEN-1:0]       rat_q1_value;
+    logic                   rat_q2_pending, rat_q2_ready;
+    logic [TAG_W-1:0]       rat_q2_tag;
+    logic [`XLEN-1:0]       rat_q2_value;
+    logic                   rat_q3_pending, rat_q3_ready;
+    logic [TAG_W-1:0]       rat_q3_tag;
+    logic [`XLEN-1:0]       rat_q3_value;
+    logic                   rat_q4_pending, rat_q4_ready;
+    logic [TAG_W-1:0]       rat_q4_tag;
+    logic [`XLEN-1:0]       rat_q4_value;
 
     // RS outputs
-    logic             rs_full;
-    logic             rs_issue_valid;
-    logic [7:0]       rs_issue_op;
-    logic [TAG_W-1:0] rs_issue_dest_tag;
-    logic [`XLEN-1:0] rs_issue_src1_value;
-    logic [`XLEN-1:0] rs_issue_src2_value;
-    logic [2:0]       rs_issue_branch_funct3;
-    logic [`XLEN-1:0] rs_issue_branch_target;
-    logic [`XLEN-1:0] rs_issue_branch_NPC;
+    logic                   rs_full, rs_almost_full;
+    logic [1:0]             rs_issue_valid;
+    logic [7:0]             rs_issue_op [2];
+    logic [TAG_W-1:0]       rs_issue_dest_tag [2];
+    logic [`XLEN-1:0]       rs_issue_src1_value [2];
+    logic [`XLEN-1:0]       rs_issue_src2_value [2];
+    logic [2:0]             rs_issue_branch_funct3 [2];
+    logic [`XLEN-1:0]       rs_issue_branch_target [2];
+    logic [`XLEN-1:0]       rs_issue_branch_NPC [2];
 
     // Dispatch operand resolution
     logic             dispatch_src1_ready, dispatch_src2_ready;
@@ -116,8 +123,21 @@ module pipeline (
     logic [1:0]       dispatch_mem_size;
     logic             dispatch_is_signed;
 
+    logic             dispatch1_src1_ready, dispatch1_src2_ready;
+    logic [TAG_W-1:0] dispatch1_src1_tag,   dispatch1_src2_tag;
+    logic [`XLEN-1:0] dispatch1_src1_value, dispatch1_src2_value;
+    logic [7:0]       dispatch1_op;
+    logic [`XLEN-1:0] dispatch1_imm;
+    logic [1:0]       dispatch1_mem_size;
+    logic             dispatch1_is_signed;
+    logic [`XLEN-1:0] dispatch1_branch_target;
+    logic [2:0]       dispatch1_branch_funct3;
+
     // Issue routing
-    logic issue_is_mult, issue_is_branch, issue_accept;
+    logic [1:0] issue_is_mult, issue_is_branch, issue_accept;
+    logic       selected_mult_valid;
+    logic       selected_mult_slot;
+    integer     available_alu_slots;
 
     // Branch buffer (legacy shared latch path — kept only for the
     // non-branch instruction flow.  Per-branch info now lives in the
@@ -138,8 +158,8 @@ module pipeline (
     // Commit-side mispredict
     logic             mispredict_valid;
     logic [`XLEN-1:0] mispredict_target;
-    logic             rob_commit_is_uncond_branch;
-    logic [`XLEN-1:0] rob_commit_branch_PC;
+    logic [1:0]             rob_commit_is_uncond_branch;
+    logic [`XLEN-1:0]       rob_commit_branch_PC [2];
 
     // MULT FU.  mult_flushed marks an in-flight mult whose ROB slot was
     // invalidated by a mispredict; when the stages finally complete we
@@ -152,19 +172,31 @@ module pipeline (
     logic [63:0]      mult_product;
     logic [63:0]      mult_mcand, mult_mplier;
     logic             mult_done_valid; // mult_done && !mult_flushed
+    logic             mult_early_done;
+
+    // Early-tag sideband.  Pulses one cycle before `mult_done_valid`,
+    // carrying the ROB tag that will retire on the next CDB broadcast so
+    // the RS / LSQ can flip registered src*_ready the same cycle and issue
+    // the consumer on the CDB cycle instead of one cycle later.
+    //
+    // Rule: early_cdb_* is a wakeup-only sideband — it NEVER feeds the RS
+    // issue selector combinationally (see rs-issue-loop-fix.md).
+    logic             early_cdb_valid;
+    logic [TAG_W-1:0] early_cdb_tag;
 
     // ALU
-    logic [`XLEN-1:0] alu_result;
-    logic signed [`XLEN-1:0] alu_signed_a, alu_signed_b;
-    logic             branch_take;
-    logic signed [`XLEN-1:0] br_signed_a, br_signed_b;
+    logic [`XLEN-1:0] alu_result [2];
+    logic signed [`XLEN-1:0] alu_signed_a [2], alu_signed_b [2];
+    logic             branch_take [2];
+    logic signed [`XLEN-1:0] br_signed_a [2], br_signed_b [2];
 
     // CDB
-    logic             cdb_valid;
-    logic [TAG_W-1:0] cdb_tag;
-    logic [`XLEN-1:0] cdb_value;
-    logic             cdb_take_branch;
-    logic [`XLEN-1:0] cdb_branch_target;
+    logic [1:0]             cdb_valid;
+    logic [TAG_W-1:0]       cdb_tag [2];
+    logic [`XLEN-1:0]       cdb_value [2];
+    logic [1:0]             cdb_take_branch;
+    logic [`XLEN-1:0]       cdb_branch_target [2];
+    logic                   lsq_load_selected;
 
     // LSQ
     logic             lsq_full;
@@ -189,6 +221,18 @@ module pipeline (
     logic [3:0]       dcache_resp_in;
     logic [3:0]       icache_resp_in;
 
+    // Stream buffer (instruction prefetcher)
+    logic [1:0]       proc2Pmem_command;
+    logic [`XLEN-1:0] proc2Pmem_addr;
+    logic [63:0]      sb_data_out;
+    logic             sb_valid_out;
+    logic [3:0]       sb_resp_in;
+    integer           prefetch_hit_count;
+
+    // Unified fetch data/valid (icache or stream buffer)
+    logic [63:0]      fetch_data_out;
+    logic             fetch_valid_out;
+
     // Error status latch
     EXCEPTION_CODE error_status_reg;
 
@@ -196,17 +240,24 @@ module pipeline (
     // Combinational assignments
     // ================================================================
 
-    assign fetched_inst = PC_reg[2] ? Icache_data_out[63:32] : Icache_data_out[31:0];
-    assign fetched_NPC  = PC_reg + 4;
+    assign fetch_data_out  = sb_valid_out ? sb_data_out : Icache_data_out;
+    assign fetch_valid_out = Icache_valid_out || sb_valid_out;
+
+    assign fetched_inst  = PC_reg[2] ? fetch_data_out[63:32] : fetch_data_out[31:0];
+    assign fetched_inst1 = PC_reg[2] ? INST'(`NOP)            : fetch_data_out[63:32];
+    assign fetched_NPC   = PC_reg + 4;
+    assign fetched_NPC1  = PC_reg + 8;
 
     assign is_mem_op = dec_rd_mem || dec_wr_mem;
+    assign slot1_candidate = Icache_valid_out && !PC_reg[2];
+    assign slot1_ok = slot1_candidate && !dec_rd_mem && !dec_wr_mem && !dec_cond_branch && !dec_uncond_branch &&
+                      !dec_halt && !dec_illegal && !dec1_rd_mem && !dec1_wr_mem && !dec1_cond_branch &&
+                      !dec1_uncond_branch && !dec1_halt && !dec1_illegal;
 
-    // branch_pending is no longer used - the branch predictor lets fetch
-    // run past unresolved branches, and mispredict recovery is handled at
-    // commit via the ROB's mispredict sideband.
-    assign stall = !Icache_valid_out || rob_full || branch_pending ||
+    assign stall = !fetch_valid_out || rob_full || branch_pending ||
                    (is_mem_op ? lsq_full : rs_full);
     assign dispatch_fire = !stall;
+    assign dispatch_fire1 = dispatch_fire && slot1_ok && !rob_almost_full && !rs_almost_full;
 
     // Compute the branch target and funct3 at dispatch for the RS entry.
     // For conditional branches, target = PC + Bimm; for unconditional
@@ -220,14 +271,23 @@ module pipeline (
             dispatch_branch_target = PC_reg + `RV32_signext_Jimm(fetched_inst);
         else
             dispatch_branch_target = PC_reg + `RV32_signext_Bimm(fetched_inst);
+
+        dispatch1_branch_funct3 = fetched_inst1.b.funct3;
+        if (dec1_uncond_branch)
+            dispatch1_branch_target = fetched_NPC + `RV32_signext_Jimm(fetched_inst1);
+        else
+            dispatch1_branch_target = fetched_NPC + `RV32_signext_Bimm(fetched_inst1);
     end
 
     // op[7]=rd_mem, op[6]=uncond_branch, op[5]=cond_branch, op[4:0]=alu_func
     assign dispatch_op   = {dec_rd_mem, dec_uncond_branch, dec_cond_branch, dec_alu_func};
+    assign dispatch1_op  = {dec1_rd_mem, dec1_uncond_branch, dec1_cond_branch, dec1_alu_func};
 
     // mem_size from funct3[1:0] (00=BYTE, 01=HALF, 10=WORD)
-    assign dispatch_mem_size  = fetched_inst.r.funct3[1:0];
-    assign dispatch_is_signed = !fetched_inst.r.funct3[2];
+    assign dispatch_mem_size   = fetched_inst.r.funct3[1:0];
+    assign dispatch_is_signed  = !fetched_inst.r.funct3[2];
+    assign dispatch1_mem_size  = fetched_inst1.r.funct3[1:0];
+    assign dispatch1_is_signed = !fetched_inst1.r.funct3[2];
 
     // Dispatched immediate (sign-extended I-imm for loads, S-imm for stores)
     always_comb begin
@@ -235,21 +295,67 @@ module pipeline (
             dispatch_imm = `RV32_signext_Simm(fetched_inst);
         else
             dispatch_imm = `RV32_signext_Iimm(fetched_inst);
+
+        if (dec1_wr_mem)
+            dispatch1_imm = `RV32_signext_Simm(fetched_inst1);
+        else
+            dispatch1_imm = `RV32_signext_Iimm(fetched_inst1);
     end
 
-    assign issue_is_mult   = (rs_issue_op[4:0] >= 5'(ALU_MUL)) &&
-                             (rs_issue_op[4:0] <= 5'(ALU_MULHU));
-    assign issue_is_branch = rs_issue_op[5] | rs_issue_op[6];
-    assign issue_accept    = rs_issue_valid &&
-                             (issue_is_mult ? !mult_busy
-                                            : !mult_done_valid && !lsq_load_complete_valid);
+    assign issue_is_mult[0]   = (rs_issue_op[0][4:0] >= 5'(ALU_MUL)) &&
+                                 (rs_issue_op[0][4:0] <= 5'(ALU_MULHU));
+    assign issue_is_mult[1]   = (rs_issue_op[1][4:0] >= 5'(ALU_MUL)) &&
+                                 (rs_issue_op[1][4:0] <= 5'(ALU_MULHU));
+    assign issue_is_branch[0] = rs_issue_op[0][5] | rs_issue_op[0][6];
+    assign issue_is_branch[1] = rs_issue_op[1][5] | rs_issue_op[1][6];
 
-    assign alu_signed_a = rs_issue_src1_value;
-    assign alu_signed_b = rs_issue_src2_value;
-    assign br_signed_a  = rs_issue_src1_value;
-    assign br_signed_b  = rs_issue_src2_value;
+    always_comb begin
+        integer nonmult_used;
+        integer reserved_cdb;
+        issue_accept[0]      = 1'b0;
+        issue_accept[1]      = 1'b0;
+        selected_mult_valid  = 1'b0;
+        selected_mult_slot   = 1'b0;
+        reserved_cdb         = (mult_done_valid ? 1 : 0) + (lsq_load_complete_valid ? 1 : 0);
+        available_alu_slots  = 2 - reserved_cdb;
+        nonmult_used         = 0;
 
-    // ----------------------------------------------------------------
+        if (rs_issue_valid[0]) begin
+            if (issue_is_mult[0]) begin
+                if (!mult_busy && !mult_done_valid) begin
+                    issue_accept[0]     = 1'b1;
+                    selected_mult_valid = 1'b1;
+                    selected_mult_slot  = 1'b0;
+                end
+            end else if (nonmult_used < available_alu_slots) begin
+                issue_accept[0] = 1'b1;
+                nonmult_used = nonmult_used + 1;
+            end
+        end
+
+        if (rs_issue_valid[1]) begin
+            if (issue_is_mult[1]) begin
+                if (!selected_mult_valid && !mult_busy && !mult_done_valid) begin
+                    issue_accept[1]     = 1'b1;
+                    selected_mult_valid = 1'b1;
+                    selected_mult_slot  = 1'b1;
+                end
+            end else if (nonmult_used < available_alu_slots) begin
+                issue_accept[1] = 1'b1;
+                nonmult_used = nonmult_used + 1;
+            end
+        end
+    end
+
+    assign alu_signed_a[0] = rs_issue_src1_value[0];
+    assign alu_signed_b[0] = rs_issue_src2_value[0];
+    assign br_signed_a[0]  = rs_issue_src1_value[0];
+    assign br_signed_b[0]  = rs_issue_src2_value[0];
+    assign alu_signed_a[1] = rs_issue_src1_value[1];
+    assign alu_signed_b[1] = rs_issue_src2_value[1];
+    assign br_signed_a[1]  = rs_issue_src1_value[1];
+    assign br_signed_b[1]  = rs_issue_src2_value[1];
+
     // Bus arbitration: dcache has priority over icache.
     //
     // The same `icache_drives` / `dcache_drives` signals are used both
@@ -261,28 +367,32 @@ module pipeline (
     // response on mem2proc_response was allocated for.  No additional
     // delay register is needed.
     // ----------------------------------------------------------------
+    // Three-level priority: dcache > icache (demand) > stream buffer (prefetch).
+    // The *_drives wires serve double duty: combinational bus mux this cycle,
+    // and response-routing mask sampled at the next posedge (inside each
+    // module's always_ff), giving "who drove last cycle" without an extra register.
     wire dcache_drives = (dc_proc2mem_command != BUS_NONE);
     wire icache_drives = !dcache_drives && (proc2Imem_command != BUS_NONE);
+    wire pfetch_drives = !dcache_drives && !icache_drives && (proc2Pmem_command != BUS_NONE);
 
     assign proc2mem_command = dcache_drives ? dc_proc2mem_command :
-                              icache_drives ? proc2Imem_command   : BUS_NONE;
-    assign proc2mem_addr    = dcache_drives ? dc_proc2mem_addr    : proc2Imem_addr;
+                              icache_drives ? proc2Imem_command   :
+                              pfetch_drives ? proc2Pmem_command   : BUS_NONE;
+    assign proc2mem_addr    = dcache_drives ? dc_proc2mem_addr    :
+                              icache_drives ? proc2Imem_addr      :
+                              pfetch_drives ? proc2Pmem_addr      : '0;
     assign proc2mem_data    = dcache_drives ? dc_proc2mem_data    : 64'b0;
 
-    // Mask each cache's view of mem2proc_response so it only sees
-    // responses for requests IT drove.  At the next posedge when the
-    // cache's always_ff samples the comb signals, icache_drives /
-    // dcache_drives reflect the PREVIOUS cycle's register state -
-    // exactly the cycle during which the response was allocated.
     assign icache_resp_in = icache_drives ? mem2proc_response : 4'b0;
     assign dcache_resp_in = dcache_drives ? mem2proc_response : 4'b0;
+    assign sb_resp_in     = pfetch_drives ? mem2proc_response : 4'b0;
 
     // Pipeline outputs
-    assign pipeline_completed_insts = {3'b0, rob_commit_valid};
-    assign pipeline_commit_wr_en    = rob_commit_valid && (rob_commit_dest_reg != 5'd0);
-    assign pipeline_commit_wr_idx   = rob_commit_dest_reg;
-    assign pipeline_commit_wr_data  = rob_commit_value;
-    assign pipeline_commit_NPC      = rob_commit_NPC;
+    assign pipeline_completed_insts ={3'b000, rob_commit_valid[0]} + {3'b000, rob_commit_valid[1]};
+    assign pipeline_commit_wr_en    = rob_commit_valid[0] && (rob_commit_dest_reg[0] != 5'd0);
+    assign pipeline_commit_wr_idx   = rob_commit_dest_reg[0];
+    assign pipeline_commit_wr_data  = rob_commit_value[0];
+    assign pipeline_commit_NPC      = rob_commit_NPC[0];
     assign pipeline_error_status    = error_status_reg;
 
     // ================================================================
@@ -302,6 +412,8 @@ module pipeline (
         else if (dispatch_fire) begin
             if (pred_valid && pred_taken)
                 PC_reg <= pred_target;
+            else if (dispatch_fire1)
+                PC_reg <= PC_reg + 8;
             else
                 PC_reg <= PC_reg + 4;
         end
@@ -324,6 +436,23 @@ module pipeline (
     );
 
     // ================================================================
+    // Stream buffer (instruction prefetcher)
+    // ================================================================
+    stream_buffer sb_0 (
+        .clock              (clock),
+        .reset              (reset),
+        .mem2sb_response    (sb_resp_in),
+        .mem2proc_data      (mem2proc_data),
+        .mem2proc_tag       (mem2proc_tag),
+        .demand_addr        ({PC_reg[`XLEN-1:3], 3'b0}),
+        .proc2Pmem_command  (proc2Pmem_command),
+        .proc2Pmem_addr     (proc2Pmem_addr),
+        .sb_data_out        (sb_data_out),
+        .sb_valid_out       (sb_valid_out),
+        .prefetch_hit_count (prefetch_hit_count)
+    );
+
+    // ================================================================
     // Branch predictor (BTB + bimodal)
     //
     // Predict port: combinational lookup on the current fetch PC.
@@ -334,10 +463,24 @@ module pipeline (
     logic             pred_taken_raw;
     logic [`XLEN-1:0] pred_target_raw;
     logic             pred_is_uncond_raw;
+
+    // ---- RAS call/return detection (link regs per RISC-V hint: x1/x5) ----
+    //   call  : JAL or JALR with rd  in {x1, x5}
+    //   return: JALR    with rs1 in {x1, x5} and rd not in {x1, x5}
+    logic is_jal_inst;
+    logic is_jalr_inst;
+    logic rd_is_link;
+    logic rs1_is_link;
+    logic predict_is_call;
+    logic predict_is_return;
+    assign is_jal_inst  = dec_uncond_branch && (fetched_inst.r.opcode == 7'b1101111);
+    assign is_jalr_inst = dec_uncond_branch && (fetched_inst.r.opcode == 7'b1100111);
+    assign rd_is_link   = (fetched_inst.r.rd  == 5'd1) || (fetched_inst.r.rd  == 5'd5);
+    assign rs1_is_link  = (fetched_inst.r.rs1 == 5'd1) || (fetched_inst.r.rs1 == 5'd5);
+    assign predict_is_call   = (is_jal_inst || is_jalr_inst) && rd_is_link;
+    assign predict_is_return = is_jalr_inst && rs1_is_link && !rd_is_link;
+
 `ifdef DISABLE_PREDICTOR
-    // Diagnostic: kill the predictor output so fetch behaves as
-    // "always predict not-taken".  Used to isolate predictor-induced
-    // bugs from the rest of the front-end.
     assign pred_valid     = 1'b0;
     assign pred_taken     = 1'b0;
     assign pred_target    = '0;
@@ -358,11 +501,16 @@ module pipeline (
         .pred_target      (pred_target_raw),
         .pred_is_uncond   (pred_is_uncond_raw),
 
-        .update_valid     (rob_commit_valid && rob_commit_is_branch),
-        .update_PC        (rob_commit_branch_PC),
-        .update_target    (rob_commit_branch_target),
-        .update_taken     (rob_commit_take_branch),
-        .update_is_uncond (rob_commit_is_uncond_branch)
+        .predict_is_return (predict_is_return),
+        .predict_link_pc   (fetched_NPC),
+        .ras_push_en       (dispatch_fire && predict_is_call),
+        .ras_pop_en        (dispatch_fire && predict_is_return),
+
+        .update_valid     ((rob_commit_valid[0] && rob_commit_is_branch[0]) || (rob_commit_valid[1] && rob_commit_is_branch[1])),
+        .update_PC        ((rob_commit_valid[0] && rob_commit_is_branch[0]) ? rob_commit_branch_PC[0] : rob_commit_branch_PC[1]),
+        .update_target    ((rob_commit_valid[0] && rob_commit_is_branch[0]) ? rob_commit_branch_target[0] : rob_commit_branch_target[1]),
+        .update_taken     ((rob_commit_valid[0] && rob_commit_is_branch[0]) ? rob_commit_take_branch[0] : rob_commit_take_branch[1]),
+        .update_is_uncond ((rob_commit_valid[0] && rob_commit_is_branch[0]) ? rob_commit_is_uncond_branch[0] : rob_commit_is_uncond_branch[1])
     );
 
     // ================================================================
@@ -370,7 +518,7 @@ module pipeline (
     // ================================================================
     decoder decoder_0 (
         .inst          (fetched_inst),
-        .valid         (Icache_valid_out),
+        .valid         (fetch_valid_out),
         .opa_select    (dec_opa_select),
         .opb_select    (dec_opb_select),
         .has_dest      (dec_has_dest),
@@ -384,6 +532,22 @@ module pipeline (
         .illegal       (dec_illegal)
     );
 
+    decoder decoder_1 (
+        .inst          (fetched_inst1),
+        .valid         (slot1_candidate),
+        .opa_select    (dec1_opa_select),
+        .opb_select    (dec1_opb_select),
+        .has_dest      (dec1_has_dest),
+        .alu_func      (dec1_alu_func),
+        .rd_mem        (dec1_rd_mem),
+        .wr_mem        (dec1_wr_mem),
+        .cond_branch   (dec1_cond_branch),
+        .uncond_branch (dec1_uncond_branch),
+        .csr_op        (dec1_csr_op),
+        .halt          (dec1_halt),
+        .illegal       (dec1_illegal)
+    );
+
     // ================================================================
     // Regfile
     // ================================================================
@@ -391,11 +555,18 @@ module pipeline (
         .clock      (clock),
         .read_idx_1 (fetched_inst.r.rs1),
         .read_idx_2 (fetched_inst.r.rs2),
-        .write_en   (rob_commit_valid && (rob_commit_dest_reg != 5'd0)),
-        .write_idx  (rob_commit_dest_reg),
-        .write_data (rob_commit_value),
+        .read_idx_3 (fetched_inst1.r.rs1),
+        .read_idx_4 (fetched_inst1.r.rs2),
+        .write_en_0   (rob_commit_valid[0] && (rob_commit_dest_reg[0] != 5'd0)),
+        .write_idx_0  (rob_commit_dest_reg[0]),
+        .write_data_0 (rob_commit_value[0]),
+        .write_en_1   (rob_commit_valid[1] && (rob_commit_dest_reg[1] != 5'd0)),
+        .write_idx_1  (rob_commit_dest_reg[1]),
+        .write_data_1 (rob_commit_value[1]),
         .read_out_1 (rf_rs1_value),
-        .read_out_2 (rf_rs2_value)
+        .read_out_2 (rf_rs2_value),
+        .read_out_3 (rf1_rs1_value),
+        .read_out_4 (rf1_rs2_value)
     );
 
     // ================================================================
@@ -478,31 +649,117 @@ module pipeline (
         end
     end
 
+    always_comb begin
+        logic dep0;
+        dep0 = dispatch_fire && dec_has_dest && (fetched_inst.r.rd != `ZERO_REG) &&
+               (fetched_inst1.r.rs1 == fetched_inst.r.rd);
+        if (dec1_cond_branch || (dec1_opa_select == OPA_IS_RS1)) begin
+            if (dep0) begin
+                dispatch1_src1_ready = 1'b0;
+                dispatch1_src1_tag   = rob_dispatch_tag[0];
+                dispatch1_src1_value = '0;
+            end else if (!rat_q3_pending) begin
+                dispatch1_src1_ready = 1'b1;
+                dispatch1_src1_tag   = '0;
+                dispatch1_src1_value = rf1_rs1_value;
+            end else if (rat_q3_ready) begin
+                dispatch1_src1_ready = 1'b1;
+                dispatch1_src1_tag   = rat_q3_tag;
+                dispatch1_src1_value = rat_q3_value;
+            end else begin
+                dispatch1_src1_ready = 1'b0;
+                dispatch1_src1_tag   = rat_q3_tag;
+                dispatch1_src1_value = '0;
+            end
+        end else begin
+            dispatch1_src1_ready = 1'b1;
+            dispatch1_src1_tag   = '0;
+            case (dec1_opa_select)
+                OPA_IS_NPC: dispatch1_src1_value = fetched_NPC1;
+                OPA_IS_PC:  dispatch1_src1_value = fetched_NPC;
+                default:    dispatch1_src1_value = '0;
+            endcase
+        end
+    end
+
+    always_comb begin
+        logic dep1;
+        dep1 = dispatch_fire && dec_has_dest && (fetched_inst.r.rd != `ZERO_REG) &&
+               (fetched_inst1.r.rs2 == fetched_inst.r.rd);
+        if (dec1_cond_branch || (dec1_opb_select == OPB_IS_RS2)) begin
+            if (dep1) begin
+                dispatch1_src2_ready = 1'b0;
+                dispatch1_src2_tag   = rob_dispatch_tag[0];
+                dispatch1_src2_value = '0;
+            end else if (!rat_q4_pending) begin
+                dispatch1_src2_ready = 1'b1;
+                dispatch1_src2_tag   = '0;
+                dispatch1_src2_value = rf1_rs2_value;
+            end else if (rat_q4_ready) begin
+                dispatch1_src2_ready = 1'b1;
+                dispatch1_src2_tag   = rat_q4_tag;
+                dispatch1_src2_value = rat_q4_value;
+            end else begin
+                dispatch1_src2_ready = 1'b0;
+                dispatch1_src2_tag   = rat_q4_tag;
+                dispatch1_src2_value = '0;
+            end
+        end else begin
+            dispatch1_src2_ready = 1'b1;
+            dispatch1_src2_tag   = '0;
+            case (dec1_opb_select)
+                OPB_IS_I_IMM: dispatch1_src2_value = `RV32_signext_Iimm(fetched_inst1);
+                OPB_IS_S_IMM: dispatch1_src2_value = `RV32_signext_Simm(fetched_inst1);
+                OPB_IS_B_IMM: dispatch1_src2_value = `RV32_signext_Bimm(fetched_inst1);
+                OPB_IS_U_IMM: dispatch1_src2_value = `RV32_signext_Uimm(fetched_inst1);
+                OPB_IS_J_IMM: dispatch1_src2_value = `RV32_signext_Jimm(fetched_inst1);
+                default:      dispatch1_src2_value = '0;
+            endcase
+        end
+    end
+
     // ================================================================
     // ROB
     // ================================================================
+    // Intermediate wires to avoid '{}' patterns unsupported by DC synthesis
+    logic [4:0]        rob_dispatch_dest_reg [2];
+    logic [`XLEN-1:0]  rob_dispatch_NPC [2];
+    logic [`XLEN-1:0]  rob_dispatch_PC [2];
+    logic [`XLEN-1:0]  rob_dispatch_pred_target [2];
+    logic [TAG_W-1:0]  rob_store_done_tag [2];
+
+    assign rob_dispatch_dest_reg[0]  = dec_has_dest  ? fetched_inst.r.rd  : 5'd0;
+    assign rob_dispatch_dest_reg[1]  = dec1_has_dest ? fetched_inst1.r.rd : 5'd0;
+    assign rob_dispatch_NPC[0]       = fetched_NPC;
+    assign rob_dispatch_NPC[1]       = fetched_NPC1;
+    assign rob_dispatch_PC[0]        = PC_reg;
+    assign rob_dispatch_PC[1]        = fetched_NPC;
+    assign rob_dispatch_pred_target[0] = (dec_cond_branch || dec_uncond_branch) ? pred_target : 32'b0;
+    assign rob_dispatch_pred_target[1] = 32'b0;
+    assign rob_store_done_tag[0]     = lsq_store_ready_tag;
+    assign rob_store_done_tag[1]     = rob_commit_tag[0];
+
     rob rob_0 (
         .clock                (clock),
         .reset                (reset),
         .flush                (mispredict_valid),
 
-        .dispatch_valid       (dispatch_fire),
-        .dispatch_dest_reg    (dec_has_dest ? fetched_inst.r.rd : 5'd0),
-        .dispatch_NPC         (fetched_NPC),
-        .dispatch_PC          (PC_reg),
-        .dispatch_halt        (dec_halt),
-        .dispatch_illegal     (dec_illegal),
-        .dispatch_is_branch   (dec_cond_branch || dec_uncond_branch),
-        .dispatch_is_uncond_branch (dec_uncond_branch),
-        .dispatch_is_store    (dec_wr_mem),
+        .dispatch_valid       ({dispatch_fire1, dispatch_fire}),
+        .dispatch_dest_reg    (rob_dispatch_dest_reg),
+        .dispatch_NPC         (rob_dispatch_NPC),
+        .dispatch_PC          (rob_dispatch_PC),
+        .dispatch_halt        ({dec1_halt, dec_halt}),
+        .dispatch_illegal     ({dec1_illegal, dec_illegal}),
+        .dispatch_is_branch   ({(dec1_cond_branch || dec1_uncond_branch), (dec_cond_branch || dec_uncond_branch)}),
+        .dispatch_is_uncond_branch ({dec1_uncond_branch, dec_uncond_branch}),
+        .dispatch_is_store    ({dec1_wr_mem, dec_wr_mem}),
 
-        // Only branches carry a real prediction; non-branches dispatch with
-        // predicted_taken=0, predicted_target=0 so the commit-time
-        // mispredict check is a no-op for them.
-        .dispatch_predicted_taken  ((dec_cond_branch || dec_uncond_branch) && pred_valid && pred_taken),
-        .dispatch_predicted_target ((dec_cond_branch || dec_uncond_branch) ? pred_target : 32'b0),
+        // Only slot0 uses predictor metadata in this minimal 2-wide frontend.
+        .dispatch_predicted_taken  ({1'b0, ((dec_cond_branch || dec_uncond_branch) && pred_valid && pred_taken)}),
+        .dispatch_predicted_target (rob_dispatch_pred_target),
 
         .rob_full             (rob_full),
+        .rob_almost_full      (rob_almost_full),
         .dispatch_tag         (rob_dispatch_tag),
 
         .cdb_valid            (cdb_valid),
@@ -511,8 +768,8 @@ module pipeline (
         .cdb_take_branch      (cdb_take_branch),
         .cdb_branch_target    (cdb_branch_target),
 
-        .store_done_valid     (lsq_store_ready_valid),
-        .store_done_tag       (lsq_store_ready_tag),
+        .store_done_valid     ({1'b0, lsq_store_ready_valid}),
+        .store_done_tag       (rob_store_done_tag),
 
         .commit_valid         (rob_commit_valid),
         .commit_tag           (rob_commit_tag),
@@ -541,38 +798,84 @@ module pipeline (
         .query2_pending       (rat_q2_pending),
         .query2_ready         (rat_q2_ready),
         .query2_tag           (rat_q2_tag),
-        .query2_value         (rat_q2_value)
+        .query2_value         (rat_q2_value),
+
+        .query3_arch_reg      (fetched_inst1.r.rs1),
+        .query3_pending       (rat_q3_pending),
+        .query3_ready         (rat_q3_ready),
+        .query3_tag           (rat_q3_tag),
+        .query3_value         (rat_q3_value),
+
+        .query4_arch_reg      (fetched_inst1.r.rs2),
+        .query4_pending       (rat_q4_pending),
+        .query4_ready         (rat_q4_ready),
+        .query4_tag           (rat_q4_tag),
+        .query4_value         (rat_q4_value)
     );
 
     // ================================================================
     // RS - non-memory ops only
     // ================================================================
+    // Intermediate wires to avoid '{}' patterns unsupported by DC synthesis
+    logic [7:0]        rs_dispatch_op [2];
+    logic [TAG_W-1:0]  rs_dispatch_dest_tag [2];
+    logic [TAG_W-1:0]  rs_dispatch_src1_tag [2];
+    logic [`XLEN-1:0]  rs_dispatch_src1_value [2];
+    logic [TAG_W-1:0]  rs_dispatch_src2_tag [2];
+    logic [`XLEN-1:0]  rs_dispatch_src2_value [2];
+    logic [2:0]        rs_dispatch_branch_funct3 [2];
+    logic [`XLEN-1:0]  rs_dispatch_branch_target [2];
+    logic [`XLEN-1:0]  rs_dispatch_branch_NPC [2];
+
+    assign rs_dispatch_op[0]            = dispatch_op;
+    assign rs_dispatch_op[1]            = dispatch1_op;
+    assign rs_dispatch_dest_tag[0]      = rob_dispatch_tag[0];
+    assign rs_dispatch_dest_tag[1]      = rob_dispatch_tag[1];
+    assign rs_dispatch_src1_tag[0]      = dispatch_src1_tag;
+    assign rs_dispatch_src1_tag[1]      = dispatch1_src1_tag;
+    assign rs_dispatch_src1_value[0]    = dispatch_src1_value;
+    assign rs_dispatch_src1_value[1]    = dispatch1_src1_value;
+    assign rs_dispatch_src2_tag[0]      = dispatch_src2_tag;
+    assign rs_dispatch_src2_tag[1]      = dispatch1_src2_tag;
+    assign rs_dispatch_src2_value[0]    = dispatch_src2_value;
+    assign rs_dispatch_src2_value[1]    = dispatch1_src2_value;
+    assign rs_dispatch_branch_funct3[0] = dispatch_branch_funct3;
+    assign rs_dispatch_branch_funct3[1] = dispatch1_branch_funct3;
+    assign rs_dispatch_branch_target[0] = dispatch_branch_target;
+    assign rs_dispatch_branch_target[1] = dispatch1_branch_target;
+    assign rs_dispatch_branch_NPC[0]    = fetched_NPC;
+    assign rs_dispatch_branch_NPC[1]    = fetched_NPC1;
+
     rs rs_0 (
         .clock               (clock),
         .reset               (reset),
         .flush               (mispredict_valid),
 
-        .dispatch_valid      (dispatch_fire && !is_mem_op),
-        .dispatch_op         (dispatch_op),
-        .dispatch_dest_tag   (rob_dispatch_tag),
+        .dispatch_valid      ({dispatch_fire1, (dispatch_fire && !is_mem_op)}),
+        .dispatch_op         (rs_dispatch_op),
+        .dispatch_dest_tag   (rs_dispatch_dest_tag),
 
-        .dispatch_src1_ready (dispatch_src1_ready),
-        .dispatch_src1_tag   (dispatch_src1_tag),
-        .dispatch_src1_value (dispatch_src1_value),
+        .dispatch_src1_ready ({dispatch_fire1 ? dispatch1_src1_ready : 1'b0, dispatch_src1_ready}),
+        .dispatch_src1_tag   (rs_dispatch_src1_tag),
+        .dispatch_src1_value (rs_dispatch_src1_value),
 
-        .dispatch_src2_ready (dispatch_src2_ready),
-        .dispatch_src2_tag   (dispatch_src2_tag),
-        .dispatch_src2_value (dispatch_src2_value),
+        .dispatch_src2_ready ({dispatch_fire1 ? dispatch1_src2_ready : 1'b0, dispatch_src2_ready}),
+        .dispatch_src2_tag   (rs_dispatch_src2_tag),
+        .dispatch_src2_value (rs_dispatch_src2_value),
 
-        .dispatch_branch_funct3 (dispatch_branch_funct3),
-        .dispatch_branch_target (dispatch_branch_target),
-        .dispatch_branch_NPC    (fetched_NPC),
+        .dispatch_branch_funct3 (rs_dispatch_branch_funct3),
+        .dispatch_branch_target (rs_dispatch_branch_target),
+        .dispatch_branch_NPC    (rs_dispatch_branch_NPC),
 
         .rs_full             (rs_full),
+        .rs_almost_full      (rs_almost_full),
 
         .cdb_valid           (cdb_valid),
         .cdb_tag             (cdb_tag),
         .cdb_value           (cdb_value),
+
+        .early_cdb_valid     (early_cdb_valid),
+        .early_cdb_tag       (early_cdb_tag),
 
         .issue_accept        (issue_accept),
         .issue_valid         (rs_issue_valid),
@@ -595,7 +898,7 @@ module pipeline (
 
         .dispatch_valid      (dispatch_fire && is_mem_op),
         .dispatch_is_store   (dec_wr_mem),
-        .dispatch_rob_tag    (rob_dispatch_tag),
+        .dispatch_rob_tag    (rob_dispatch_tag[0]),
         .dispatch_mem_size   (dispatch_mem_size),
         .dispatch_is_signed  (dispatch_is_signed),
 
@@ -616,11 +919,16 @@ module pipeline (
         .cdb_tag             (cdb_tag),
         .cdb_value           (cdb_value),
 
+        .early_cdb_valid     (early_cdb_valid),
+        .early_cdb_tag       (early_cdb_tag),
+
         .store_ready_valid   (lsq_store_ready_valid),
         .store_ready_tag     (lsq_store_ready_tag),
 
-        .rob_commit_valid    (rob_commit_valid),
-        .rob_commit_tag      (rob_commit_tag),
+        .rob_commit_valid    ((rob_commit_valid[0] && rob_commit_is_store[0]) ||
+                            (rob_commit_valid[1] && rob_commit_is_store[1])),
+        .rob_commit_tag      ((rob_commit_valid[0] && rob_commit_is_store[0]) ? rob_commit_tag[0] :
+                            ((rob_commit_valid[1] && rob_commit_is_store[1]) ? rob_commit_tag[1] : rob_commit_tag[0])),
 
         .dcache_load         (lsq_dcache_load),
         .dcache_store        (lsq_dcache_store),
@@ -641,7 +949,7 @@ module pipeline (
     // the CDB this cycle.  When MULT wins arbitration the LSQ holds the
     // value in its per-entry buffer and re-asserts next cycle.  A
     // flushed (poisoned) mult is not blocked on, so the LSQ can still win.
-    assign lsq_load_complete_accept = lsq_load_complete_valid && !mult_done_valid;
+    assign lsq_load_complete_accept = lsq_load_selected;
 
     // ================================================================
     // D-Cache
@@ -690,7 +998,7 @@ module pipeline (
             branch_pending_reg <= 1'b0;
         else if (mispredict_valid)
             branch_pending_reg <= 1'b0;
-        else if (rob_commit_valid && rob_commit_is_branch)
+        else if ((rob_commit_valid[0] && rob_commit_is_branch[0]) || (rob_commit_valid[1] && rob_commit_is_branch[1]))
             branch_pending_reg <= 1'b0;
         else if (dispatch_fire && (dec_cond_branch || dec_uncond_branch))
             branch_pending_reg <= 1'b1;
@@ -706,35 +1014,74 @@ module pipeline (
     // MULT functional unit
     // ================================================================
     always_comb begin
-        case (ALU_FUNC'(rs_issue_op[4:0]))
-            ALU_MUL, ALU_MULH: begin
-                mult_mcand  = {{32{rs_issue_src1_value[31]}}, rs_issue_src1_value};
-                mult_mplier = {{32{rs_issue_src2_value[31]}}, rs_issue_src2_value};
-            end
-            ALU_MULHU: begin
-                mult_mcand  = {32'b0, rs_issue_src1_value};
-                mult_mplier = {32'b0, rs_issue_src2_value};
-            end
-            ALU_MULHSU: begin
-                mult_mcand  = {{32{rs_issue_src1_value[31]}}, rs_issue_src1_value};
-                mult_mplier = {32'b0, rs_issue_src2_value};
-            end
-            default: begin
-                mult_mcand  = {32'b0, rs_issue_src1_value};
-                mult_mplier = {32'b0, rs_issue_src2_value};
-            end
-        endcase
+        if (selected_mult_slot) begin
+            case (ALU_FUNC'(rs_issue_op[1][4:0]))
+                ALU_MUL, ALU_MULH: begin
+                    mult_mcand  = {{32{rs_issue_src1_value[1][31]}}, rs_issue_src1_value[1]};
+                    mult_mplier = {{32{rs_issue_src2_value[1][31]}}, rs_issue_src2_value[1]};
+                end
+                ALU_MULHU: begin
+                    mult_mcand  = {32'b0, rs_issue_src1_value[1]};
+                    mult_mplier = {32'b0, rs_issue_src2_value[1]};
+                end
+                ALU_MULHSU: begin
+                    mult_mcand  = {{32{rs_issue_src1_value[1][31]}}, rs_issue_src1_value[1]};
+                    mult_mplier = {32'b0, rs_issue_src2_value[1]};
+                end
+                default: begin
+                    mult_mcand  = {32'b0, rs_issue_src1_value[1]};
+                    mult_mplier = {32'b0, rs_issue_src2_value[1]};
+                end
+            endcase
+        end else begin
+            case (ALU_FUNC'(rs_issue_op[0][4:0]))
+                ALU_MUL, ALU_MULH: begin
+                    mult_mcand  = {{32{rs_issue_src1_value[0][31]}}, rs_issue_src1_value[0]};
+                    mult_mplier = {{32{rs_issue_src2_value[0][31]}}, rs_issue_src2_value[0]};
+                end
+                ALU_MULHU: begin
+                    mult_mcand  = {32'b0, rs_issue_src1_value[0]};
+                    mult_mplier = {32'b0, rs_issue_src2_value[0]};
+                end
+                ALU_MULHSU: begin
+                    mult_mcand  = {{32{rs_issue_src1_value[0][31]}}, rs_issue_src1_value[0]};
+                    mult_mplier = {32'b0, rs_issue_src2_value[0]};
+                end
+                default: begin
+                    mult_mcand  = {32'b0, rs_issue_src1_value[0]};
+                    mult_mplier = {32'b0, rs_issue_src2_value[0]};
+                end
+            endcase
+        end
     end
 
     mult mult_0 (
-        .clock   (clock),
-        .reset   (reset),
-        .mcand   (mult_mcand),
-        .mplier  (mult_mplier),
-        .start   (issue_accept && issue_is_mult),
-        .product (mult_product),
-        .done    (mult_done)
+        .clock      (clock),
+        .reset      (reset),
+        .mcand      (mult_mcand),
+        .mplier     (mult_mplier),
+        .start      (selected_mult_valid),
+        .product    (mult_product),
+        .done       (mult_done),
+        .early_done (mult_early_done)
     );
+
+    // Early-tag producer.  Gated off by `mult_flushed` (producer poisoned
+    // by an older mispredict) and by `mispredict_valid` (new mispredict
+    // this cycle also clears every downstream consumer).  Consumers get a
+    // tag that is 1 cycle early; the real CDB broadcast on the next cycle
+    // will carry the value.
+    //
+    // `+define+DISABLE_EARLY_TAG` at the Makefile level forces the wire
+    // to 0 without any other code change; this is the A/B regression
+    // toggle called out in design §6 / requirement "Pipeline exposes a
+    // compile-time escape hatch".
+    `ifndef DISABLE_EARLY_TAG
+        assign early_cdb_valid = mult_early_done && !mult_flushed && !mispredict_valid;
+    `else
+        assign early_cdb_valid = 1'b0;
+    `endif
+    assign early_cdb_tag = mult_dest_tag_reg;
 
     always_ff @(posedge clock) begin
         if (reset) begin
@@ -747,109 +1094,98 @@ module pipeline (
                 mult_busy    <= 1'b0;
                 mult_flushed <= 1'b0;
             end
-            // Mispredict: any mult currently churning is targeting a ROB
-            // slot that is about to be cleared / re-allocated.  Mark its
-            // output as poisoned so we drop it when it eventually reports
-            // done.
             if (mispredict_valid && mult_busy && !mult_done)
                 mult_flushed <= 1'b1;
-            if (issue_accept && issue_is_mult) begin
+            if (selected_mult_valid) begin
                 mult_busy         <= 1'b1;
                 mult_flushed      <= 1'b0;
-                mult_dest_tag_reg <= rs_issue_dest_tag;
-                mult_alu_func_reg <= ALU_FUNC'(rs_issue_op[4:0]);
+                mult_dest_tag_reg <= selected_mult_slot ? rs_issue_dest_tag[1] : rs_issue_dest_tag[0];
+                mult_alu_func_reg <= selected_mult_slot ? ALU_FUNC'(rs_issue_op[1][4:0]) : ALU_FUNC'(rs_issue_op[0][4:0]);
             end
         end
     end
 
     assign mult_done_valid = mult_done && !mult_flushed;
 
-    // ================================================================
-    // ALU (single-cycle, inline)
-    // ================================================================
-    always_comb begin
-        case (ALU_FUNC'(rs_issue_op[4:0]))
-            ALU_ADD:  alu_result = rs_issue_src1_value + rs_issue_src2_value;
-            ALU_SUB:  alu_result = rs_issue_src1_value - rs_issue_src2_value;
-            ALU_AND:  alu_result = rs_issue_src1_value & rs_issue_src2_value;
-            ALU_OR:   alu_result = rs_issue_src1_value | rs_issue_src2_value;
-            ALU_XOR:  alu_result = rs_issue_src1_value ^ rs_issue_src2_value;
-            ALU_SLT:  alu_result = {31'b0, alu_signed_a < alu_signed_b};
-            ALU_SLTU: alu_result = {31'b0, rs_issue_src1_value < rs_issue_src2_value};
-            ALU_SRL:  alu_result = rs_issue_src1_value >> rs_issue_src2_value[4:0];
-            ALU_SLL:  alu_result = rs_issue_src1_value << rs_issue_src2_value[4:0];
-            ALU_SRA:  alu_result = `XLEN'(alu_signed_a >>> rs_issue_src2_value[4:0]);
-            default:  alu_result = `XLEN'hdeadbeef;
-        endcase
-    end
+    genvar ai;
+    generate
+        for (ai = 0; ai < 2; ai++) begin : GEN_ALU
+            always_comb begin
+                case (ALU_FUNC'(rs_issue_op[ai][4:0]))
+                    ALU_ADD:  alu_result[ai] = rs_issue_src1_value[ai] + rs_issue_src2_value[ai];
+                    ALU_SUB:  alu_result[ai] = rs_issue_src1_value[ai] - rs_issue_src2_value[ai];
+                    ALU_AND:  alu_result[ai] = rs_issue_src1_value[ai] & rs_issue_src2_value[ai];
+                    ALU_OR:   alu_result[ai] = rs_issue_src1_value[ai] | rs_issue_src2_value[ai];
+                    ALU_XOR:  alu_result[ai] = rs_issue_src1_value[ai] ^ rs_issue_src2_value[ai];
+                    ALU_SLT:  alu_result[ai] = {31'b0, alu_signed_a[ai] < alu_signed_b[ai]};
+                    ALU_SLTU: alu_result[ai] = {31'b0, rs_issue_src1_value[ai] < rs_issue_src2_value[ai]};
+                    ALU_SRL:  alu_result[ai] = rs_issue_src1_value[ai] >> rs_issue_src2_value[ai][4:0];
+                    ALU_SLL:  alu_result[ai] = rs_issue_src1_value[ai] << rs_issue_src2_value[ai][4:0];
+                    ALU_SRA:  alu_result[ai] = `XLEN'(alu_signed_a[ai] >>> rs_issue_src2_value[ai][4:0]);
+                    default:  alu_result[ai] = `XLEN'hdeadbeef;
+                endcase
+            end
+            always_comb begin
+                case (rs_issue_branch_funct3[ai])
+                    3'b000: branch_take[ai] = (rs_issue_src1_value[ai] == rs_issue_src2_value[ai]);
+                    3'b001: branch_take[ai] = (rs_issue_src1_value[ai] != rs_issue_src2_value[ai]);
+                    3'b100: branch_take[ai] = (br_signed_a[ai] < br_signed_b[ai]);
+                    3'b101: branch_take[ai] = (br_signed_a[ai] >= br_signed_b[ai]);
+                    3'b110: branch_take[ai] = (rs_issue_src1_value[ai] < rs_issue_src2_value[ai]);
+                    3'b111: branch_take[ai] = (rs_issue_src1_value[ai] >= rs_issue_src2_value[ai]);
+                    default: branch_take[ai] = 1'b0;
+                endcase
+            end
+        end
+    endgenerate
 
-    // Conditional branch outcome (funct3 now travels with the RS entry)
     always_comb begin
-        case (rs_issue_branch_funct3)
-            3'b000: branch_take = (rs_issue_src1_value == rs_issue_src2_value); // BEQ
-            3'b001: branch_take = (rs_issue_src1_value != rs_issue_src2_value); // BNE
-            3'b100: branch_take = (br_signed_a < br_signed_b);                  // BLT
-            3'b101: branch_take = (br_signed_a >= br_signed_b);                 // BGE
-            3'b110: branch_take = (rs_issue_src1_value < rs_issue_src2_value);  // BLTU
-            3'b111: branch_take = (rs_issue_src1_value >= rs_issue_src2_value); // BGEU
-            default: branch_take = 1'b0;
-        endcase
-    end
-
-    // ================================================================
-    // CDB arbitration:
-    //   Priority 1: MULT (multicycle)
-    //   Priority 2: LSQ load complete (multicycle, blocked by mult_done)
-    //   Priority 3: ALU (single-cycle, blocked by either of the above)
-    //
-    // Stores never go on the CDB; they use the store_done sideband on
-    // the ROB instead.
-    // ================================================================
-    always_comb begin
-        cdb_valid         = 1'b0;
-        cdb_tag           = '0;
-        cdb_value         = '0;
-        cdb_take_branch   = 1'b0;
-        cdb_branch_target = '0;
-
-        if (mult_done_valid) begin
-            cdb_valid = 1'b1;
-            cdb_tag   = mult_dest_tag_reg;
+        integer slot;
+        integer used;
+        lsq_load_selected = 1'b0;
+        for (slot = 0; slot < 2; slot++) begin
+            cdb_valid[slot]         = 1'b0;
+            cdb_tag[slot]           = '0;
+            cdb_value[slot]         = '0;
+            cdb_take_branch[slot]   = 1'b0;
+            cdb_branch_target[slot] = '0;
+        end
+        used = 0;
+        if (mult_done_valid && used < 2) begin
+            cdb_valid[used] = 1'b1;
+            cdb_tag[used]   = mult_dest_tag_reg;
             case (mult_alu_func_reg)
-                ALU_MUL:    cdb_value = mult_product[`XLEN-1:0];
-                ALU_MULH:   cdb_value = mult_product[2*`XLEN-1:`XLEN];
-                ALU_MULHU:  cdb_value = mult_product[2*`XLEN-1:`XLEN];
-                ALU_MULHSU: cdb_value = mult_product[2*`XLEN-1:`XLEN];
-                default:    cdb_value = mult_product[`XLEN-1:0];
+                ALU_MUL:    cdb_value[used] = mult_product[`XLEN-1:0];
+                ALU_MULH:   cdb_value[used] = mult_product[2*`XLEN-1:`XLEN];
+                ALU_MULHU:  cdb_value[used] = mult_product[2*`XLEN-1:`XLEN];
+                ALU_MULHSU: cdb_value[used] = mult_product[2*`XLEN-1:`XLEN];
+                default:    cdb_value[used] = mult_product[`XLEN-1:0];
             endcase
-        end else if (lsq_load_complete_valid) begin
-            cdb_valid = 1'b1;
-            cdb_tag   = lsq_load_complete_tag;
-            cdb_value = lsq_load_complete_value;
-        end else if (issue_accept && !issue_is_mult) begin
-            cdb_valid = 1'b1;
-            cdb_tag   = rs_issue_dest_tag;
-            if (rs_issue_op[6]) begin          // uncond branch (JAL/JALR)
-                // The ALU computes the target for both JAL (PC + J_imm)
-                // and JALR (rs1 + I_imm).  Clearing bit 0 is a no-op
-                // for JAL and matches the JALR spec.  The CDB value is the
-                // return address (NPC) so that any CDB-bypass consumer
-                // (RS/LSQ wakeup, RAT query bypass) sees the correct link
-                // register value instead of 0.  The ROB's commit-value
-                // override (entries[head].NPC) becomes redundant but is
-                // left in place so correctness is not double-dependent on
-                // this CDB fix.
-                cdb_value         = rs_issue_branch_NPC;
-                cdb_take_branch   = 1'b1;
-                cdb_branch_target = {alu_result[`XLEN-1:1], 1'b0};
-            end else if (rs_issue_op[5]) begin // cond branch
-                cdb_value         = '0;
-                cdb_take_branch   = branch_take;
-                cdb_branch_target = rs_issue_branch_target;
-            end else begin                     // regular ALU
-                cdb_value         = alu_result;
-                cdb_take_branch   = 1'b0;
-                cdb_branch_target = '0;
+            used = used + 1;
+        end
+        if (lsq_load_complete_valid && used < 2) begin
+            cdb_valid[used] = 1'b1;
+            cdb_tag[used]   = lsq_load_complete_tag;
+            cdb_value[used] = lsq_load_complete_value;
+            lsq_load_selected = 1'b1;
+            used = used + 1;
+        end
+        for (slot = 0; slot < 2; slot++) begin
+            if (issue_accept[slot] && !issue_is_mult[slot] && used < 2) begin
+                cdb_valid[used] = 1'b1;
+                cdb_tag[used]   = rs_issue_dest_tag[slot];
+                if (rs_issue_op[slot][6]) begin
+                    cdb_value[used]         = rs_issue_branch_NPC[slot];
+                    cdb_take_branch[used]   = 1'b1;
+                    cdb_branch_target[used] = {alu_result[slot][`XLEN-1:1], 1'b0};
+                end else if (rs_issue_op[slot][5]) begin
+                    cdb_value[used]         = '0;
+                    cdb_take_branch[used]   = branch_take[slot];
+                    cdb_branch_target[used] = rs_issue_branch_target[slot];
+                end else begin
+                    cdb_value[used]         = alu_result[slot];
+                end
+                used = used + 1;
             end
         end
     end
@@ -860,10 +1196,10 @@ module pipeline (
     always_ff @(posedge clock) begin
         if (reset)
             error_status_reg <= NO_ERROR;
-        else if (rob_commit_valid) begin
-            if (rob_commit_halt)
+        else if (rob_commit_valid[0] || rob_commit_valid[1]) begin
+            if ((rob_commit_valid[0] && rob_commit_halt[0]) || (rob_commit_valid[1] && rob_commit_halt[1]))
                 error_status_reg <= HALTED_ON_WFI;
-            else if (rob_commit_illegal)
+            else if ((rob_commit_valid[0] && rob_commit_illegal[0]) || (rob_commit_valid[1] && rob_commit_illegal[1]))
                 error_status_reg <= ILLEGAL_INST;
         end
     end

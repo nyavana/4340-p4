@@ -8,7 +8,10 @@
 //   2.  Store hit (modify a clean line, mark dirty)
 //   3.  Load hit reads back the modified line
 //   4.  Sub-word stores (BYTE / HALF / WORD) update only the requested bytes
-//   5.  Eviction of a dirty victim triggers a writeback to memory
+//   5.  Two aliased addresses can co-exist in one set without thrashing
+//   6.  LRU updates on hit change which way gets evicted
+//   7.  Next-line prefetch turns an adjacent load into a later hit
+//   8.  Eviction of a dirty victim triggers a writeback to memory
 //
 // The testbench fakes a tiny version of mem.sv inline so we don't have to
 // pull in the real one.  Conforms to the `.pass` grep convention:
@@ -53,8 +56,10 @@ module dcache_test;
     integer       pending_cycles;
     logic [63:0]  pending_data;
     logic         pending_active;
+    integer       mem_load_reqs;
+    integer       mem_store_reqs;
 
-    always @(posedge clock) begin
+    always @(negedge clock) begin
         if (reset) begin
             Dmem2proc_response <= 4'b0;
             Dmem2proc_data     <= 64'b0;
@@ -62,6 +67,8 @@ module dcache_test;
             pending_cycles     <= 0;
             pending_data       <= 64'b0;
             pending_active     <= 1'b0;
+            mem_load_reqs      <= 0;
+            mem_store_reqs     <= 0;
         end else begin
             Dmem2proc_response <= 4'b0;
             Dmem2proc_tag      <= 4'b0;
@@ -83,9 +90,11 @@ module dcache_test;
                 pending_data       <= fake_mem[proc2Dmem_addr[15:3]];
                 pending_cycles     <= 1; // 2-cycle latency
                 pending_active     <= 1'b1;
+                mem_load_reqs      <= mem_load_reqs + 1;
             end else if (proc2Dmem_command == BUS_STORE) begin
                 Dmem2proc_response <= 4'd1;
                 fake_mem[proc2Dmem_addr[15:3]] <= proc2Dmem_data;
+                mem_store_reqs     <= mem_store_reqs + 1;
             end
         end
     end
@@ -169,6 +178,19 @@ module dcache_test;
         begin
             if (got !== exp) begin
                 $display("ERROR: %s mismatch: got=%b exp=%b @ t=%0t",
+                         name, got, exp, $time);
+                error_count = error_count + 1;
+            end
+        end
+    endtask
+
+    task automatic check_eq_int;
+        input string name;
+        input integer got;
+        input integer exp;
+        begin
+            if (got !== exp) begin
+                $display("ERROR: %s mismatch: got=%0d exp=%0d @ t=%0t",
                          name, got, exp, $time);
                 error_count = error_count + 1;
             end
@@ -341,29 +363,136 @@ module dcache_test;
 
     task automatic test_dirty_eviction;
         logic [63:0] r;
-        // The dcache index is addr[7:3] (5 bits).  Two addresses share an
-        // index when their bits [7:3] match.  Pick 0x0000 and 0x0100 - both
-        // have addr[7:3]=0 but different tags (addr[15:8]).
+        integer stores_before;
         begin
             test_count = test_count + 1;
             $display("\n=== Test %0d: dirty eviction triggers writeback ===", test_count);
             do_reset();
             fake_mem[16'h0000 >> 3] = 64'h1111_2222_3333_4444;
+            fake_mem[16'h0080 >> 3] = 64'hAAAA_0000_AAAA_0000;
             fake_mem[16'h2000 >> 3] = 64'h5555_6666_7777_8888;
 
-            // Bring 0x0000 into the cache, modify it (becomes dirty).
+            // Load two lines into the same set, dirty A, then touch B so A
+            // becomes the LRU victim before bringing in C.
             do_load(32'h0000, r);
             check_eq64("init load 0x0000", r, 64'h1111_2222_3333_4444);
+            do_load(32'h0080, r);
+            check_eq64("init load 0x0080", r, 64'hAAAA_0000_AAAA_0000);
             do_store(32'h0000, 64'hAAAA_BBBB_CCCC_DDDD, 8'hff);
+            do_load(32'h0080, r);
+            check_eq64("reload 0x0080 before eviction", r, 64'hAAAA_0000_AAAA_0000);
 
-            // Now access 0x2000 which maps to the same index. The dirty
-            // line at index 0 must get written back first.
+            stores_before = mem_store_reqs;
             do_load(32'h2000, r);
             check_eq64("load 0x2000 after eviction", r, 64'h5555_6666_7777_8888);
+            check_eq_int("writeback count", mem_store_reqs - stores_before, 1);
 
             // Confirm the eviction actually wrote the new value to memory.
             check_eq64("evicted line in fake_mem",
                        fake_mem[16'h0000 >> 3], 64'hAAAA_BBBB_CCCC_DDDD);
+        end
+    endtask
+
+    task automatic test_aliased_addresses_can_coexist;
+        logic [63:0] r;
+        integer loads_before;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: aliased addresses do not thrash in 2-way set ===", test_count);
+            do_reset();
+            fake_mem[16'h0000 >> 3] = 64'h0101_0101_0101_0101;
+            fake_mem[16'h0080 >> 3] = 64'h0202_0202_0202_0202;
+
+            do_load(32'h0000, r);
+            check_eq64("load alias A", r, 64'h0101_0101_0101_0101);
+            do_load(32'h0080, r);
+            check_eq64("load alias B", r, 64'h0202_0202_0202_0202);
+
+            // Let any miss-triggered background prefetch settle before
+            // checking whether the aliased reloads themselves miss.
+            repeat (4) begin
+                @(posedge clock);
+                #1;
+            end
+
+            loads_before = mem_load_reqs;
+            do_load(32'h0000, r);
+            check_eq64("reload alias A", r, 64'h0101_0101_0101_0101);
+            do_load(32'h0080, r);
+            check_eq64("reload alias B", r, 64'h0202_0202_0202_0202);
+            check_eq_int("aliased hits avoid extra memory loads",
+                         mem_load_reqs - loads_before, 0);
+        end
+    endtask
+
+    task automatic test_hit_updates_lru_replacement;
+        logic [63:0] r;
+        integer loads_before;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: hit updates LRU victim selection ===", test_count);
+            do_reset();
+            fake_mem[16'h0000 >> 3] = 64'h1111_1111_1111_1111;
+            fake_mem[16'h0080 >> 3] = 64'h2222_2222_2222_2222;
+            fake_mem[16'h2000 >> 3] = 64'h3333_3333_3333_3333;
+
+            do_load(32'h0000, r);
+            check_eq64("fill A", r, 64'h1111_1111_1111_1111);
+            do_load(32'h0080, r);
+            check_eq64("fill B", r, 64'h2222_2222_2222_2222);
+
+            // A is the LRU after the two fills. Hitting A should make B LRU.
+            do_load(32'h0000, r);
+            check_eq64("hit A updates LRU", r, 64'h1111_1111_1111_1111);
+
+            do_load(32'h2000, r);
+            check_eq64("fill C evicts B", r, 64'h3333_3333_3333_3333);
+
+            // Same idea here: allow the miss-triggered next-line
+            // prefetch to finish so the counters only reflect the
+            // reloads under test.
+            repeat (4) begin
+                @(posedge clock);
+                #1;
+            end
+
+            loads_before = mem_load_reqs;
+            do_load(32'h0000, r);
+            check_eq64("A should still be cached", r, 64'h1111_1111_1111_1111);
+            check_eq_int("A reload is a hit", mem_load_reqs - loads_before, 0);
+
+            loads_before = mem_load_reqs;
+            do_load(32'h0080, r);
+            check_eq64("B should have been evicted", r, 64'h2222_2222_2222_2222);
+            check_eq_int("B reload misses after LRU eviction",
+                         mem_load_reqs - loads_before, 1);
+        end
+    endtask
+
+    task automatic test_next_line_prefetch;
+        logic [63:0] r;
+        integer loads_before;
+        begin
+            test_count = test_count + 1;
+            $display("\n=== Test %0d: next-line prefetch warms the adjacent line ===", test_count);
+            do_reset();
+            fake_mem[16'h0180 >> 3] = 64'h1111_AAAA_2222_BBBB;
+            fake_mem[16'h0188 >> 3] = 64'h3333_CCCC_4444_DDDD;
+
+            do_load(32'h0180, r);
+            check_eq64("first line demand load", r, 64'h1111_AAAA_2222_BBBB);
+
+            // Let the background prefetch request allocate and return.
+            repeat (4) begin
+                @(posedge clock);
+                #1;
+            end
+
+            loads_before = mem_load_reqs;
+            do_load(32'h0188, r);
+            check_eq64("adjacent line after prefetch", r, 64'h3333_CCCC_4444_DDDD);
+            check_eq_int("adjacent line should already be cached",
+                         mem_load_reqs - loads_before, 0);
         end
     endtask
 
@@ -382,6 +511,9 @@ module dcache_test;
         test_byte_store_only_modifies_one_byte();
         test_half_store_only_modifies_two_bytes();
         test_word_store();
+        test_aliased_addresses_can_coexist();
+        test_hit_updates_lru_replacement();
+        test_next_line_prefetch();
         test_dirty_eviction();
 
         if (error_count == 0)
