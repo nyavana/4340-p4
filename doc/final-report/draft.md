@@ -18,7 +18,13 @@ The rest of the report is organized so the architecture comes before the feature
 
 ## II. Background and Constraints
 
-[TODO §II — drafted in Task 3.]
+In an in-order pipeline, instructions execute in the same order the program lists them. That is simple to reason about and simple to build, but it has a familiar weakness. Suppose a load misses the cache and stalls for the full memory latency, and the very next instruction is an add that does not touch the load's destination register. The add has nothing to wait for, but the in-order pipeline makes it wait anyway, because the load is in front of it.
+
+Out-of-order execution lets the add issue and complete while the load is still in flight. The pipeline tracks operand readiness instead of program position, so independent work runs whenever its inputs are available. The catch is that results now come back in a different order than the program wrote them, and the architectural state has to look as if everything still happened in program order. That is what the Reorder Buffer is for: it holds in-flight results and retires them at the head, in order, so the register file and memory only see the program-order view. Three classical hazards drive most of the design choices: Read-After-Write (RAW), Write-After-Read (WAR), and Write-After-Write (WAW). Renaming handles WAR and WAW by giving each instruction a fresh destination tag; the Reservation Station and CDB handle RAW by waking instructions up the moment their producers broadcast.
+
+The Reorder Buffer (ROB) is the in-order checkpoint of the machine: it holds every dispatched instruction until commit and is what makes the architectural state look in-order. The Reservation Station (RS) is where a dispatched instruction waits for its operands and then hands itself to a functional unit once they arrive. The Common Data Bus (CDB) is the shared wire that carries each completed result back to the ROB and to any waiting consumers. The Load-Store Queue (LSQ) is the memory-side equivalent of the ROB: it tracks loads and stores in program order and is the only path to the data cache. The branch predictor guesses the direction and target of each branch at fetch so the front end keeps moving instead of waiting for the branch to resolve at the far end of the pipeline.
+
+Several numbers in this design were fixed by the assignment, not chosen by us. Main memory has a 100 ns access latency. The instruction cache and the data cache are each capped at 256 bytes. The number of Common Data Buses cannot exceed the narrowest stage of the pipeline, so a one-wide pipeline is allowed at most one CDB and a two-wide pipeline at most two. The multiplier is the pipelined unit inherited from Project 2. We mention these here because they shape every later trade-off, and a reader who did not know they were spec-imposed would otherwise read them as bad calls on our part.
 
 ## III. Pipeline Architecture
 
