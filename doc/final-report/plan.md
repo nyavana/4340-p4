@@ -85,7 +85,7 @@ Per the spec, dispatch with `model: opus` (Opus 4.7).
 **Files:**
 - Create: `doc/final-report/draft.md`
 
-- [ ] **Step 1: Write the skeleton with section headers and figure/table placeholders**
+- [x] **Step 1: Write the skeleton with section headers and figure/table placeholders** (done inline; commit `9c89a33`)
 
 ```markdown
 # Out-of-Order RISC-V Processor — Final Project Report
@@ -177,7 +177,7 @@ EECS 4340, Spring 2026.
 [TODO references — drafted in Task 15.]
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit** (commit `9c89a33`)
 
 ```bash
 git add doc/final-report/draft.md doc/final-report/plan.md
@@ -199,12 +199,12 @@ Each task in this phase has the same shape:
 
 The "Step" syntax below shows the dispatcher actions. The subagent's actual writing time is 5–15 minutes per section and is not a "step" in the bite-sized sense — it is the work the dispatched subagent performs.
 
-### Task 2: Draft §I Introduction
+### Task 2: Draft §I Introduction ✅ done (commits 2d2fa1b, db68499)
 
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §I — drafted in Task 2.]`)
 
-- [ ] **Step 1: Dispatch the drafting subagent**
+- [x] **Step 1: Dispatch the drafting subagent**
 
 Use the Agent tool with `model: opus` and the shared prompt template, filling in:
 
@@ -225,38 +225,22 @@ Per spec §5 §I, this section has three parts in spirit (no need to number them
 Source material: doc/project-overview.md §1, §3.
 ```
 
-- [ ] **Step 2: Read the returned section in `draft.md`**
+- [x] **Step 2: Read the returned section in `draft.md`**
 
-- [ ] **Step 3: Run the guideline §5 quick checklist**
+- [x] **Step 3: Run the guideline §5 quick checklist** (spec reviewer + quality reviewer dispatched per skill)
 
-Verify each item:
-- [ ] Plain-language opener
-- [ ] Acronyms spelled out on first use
-- [ ] No cross-references to internal docs
-- [ ] Every design choice has a `why` in the same paragraph
-- [ ] Honest about limits where applicable
-- [ ] No point-value claims
-- [ ] Length within ~1 page
+- [x] **Step 4: Revisions** — milestone-attribution fix + roadmap trim (commit `db68499`)
 
-- [ ] **Step 4: If revisions needed, re-dispatch with notes**
-
-Otherwise proceed.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add doc/final-report/draft.md
-git commit -m "draft final-report §I introduction"
-```
+- [x] **Step 5: Commit** — see commits `2d2fa1b` (initial draft) and `db68499` (fixes)
 
 ---
 
-### Task 3: Draft §II Background and Constraints
+### Task 3: Draft §II Background and Constraints ✅ done (commits 5b0e17b, f0a6dac)
 
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §II — drafted in Task 3.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters**
 
 - `<SECTION_ID>` = "II"
 - `<SECTION_TITLE>` = "Background and Constraints"
@@ -289,12 +273,12 @@ git commit -m "draft final-report §II background and constraints"
 
 ---
 
-### Task 4: Draft §III Pipeline Architecture
+### Task 4: Draft §III Pipeline Architecture ✅ done (commits 46d255e + RAS fix)
 
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §III — drafted in Task 4.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters**
 
 - `<SECTION_ID>` = "III"
 - `<SECTION_TITLE>` = "Pipeline Architecture"
@@ -327,12 +311,12 @@ git commit -m "draft final-report §III pipeline architecture"
 
 ---
 
-### Task 5: Draft §IV Base Implementation Details
+### Task 5: Draft §IV Base Implementation Details ✅ done (commits fb140f1, 531db85, plus polish)
 
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §IV — drafted in Task 5. ...]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters**
 
 - `<SECTION_ID>` = "IV"
 - `<SECTION_TITLE>` = "Base Implementation Details"
@@ -378,7 +362,7 @@ git commit -m "draft final-report §IV base implementation details"
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §V opener — drafted in Task 6.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "V (opener only)"
 - `<SECTION_TITLE>` = "Advanced Features — opening"
@@ -427,7 +411,7 @@ git commit -m "draft final-report §V opener with feature-mapping table"
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §V.A — drafted in Task 7.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "V.A"
 - `<SECTION_TITLE>` = "2-way Superscalar"
@@ -465,7 +449,7 @@ git commit -m "draft final-report §V.A superscalar"
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §V.B — drafted in Task 8.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "V.B"
 - `<SECTION_TITLE>` = "Early Tag Broadcast"
@@ -507,7 +491,7 @@ git commit -m "draft final-report §V.B early tag broadcast"
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §V.C — drafted in Task 9. Two leaves: gshare and RAS.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "V.C"
 - `<SECTION_TITLE>` = "Branch-Prediction Enhancements"
@@ -558,7 +542,7 @@ git commit -m "draft final-report §V.C branch-prediction enhancements"
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §V.D — drafted in Task 10. ...]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "V.D"
 - `<SECTION_TITLE>` = "D-cache Enhancements"
@@ -609,7 +593,7 @@ git commit -m "draft final-report §V.D dcache enhancements"
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §V.E — drafted in Task 11.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "V.E"
 - `<SECTION_TITLE>` = "Store-to-Load Forwarding"
@@ -651,7 +635,7 @@ git commit -m "draft final-report §V.E store-to-load forwarding"
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §VI — drafted in Task 12.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "VI"
 - `<SECTION_TITLE>` = "Verification and Testing Methodology"
@@ -697,7 +681,7 @@ git commit -m "draft final-report §VI verification and testing methodology"
 
 This is the highest-leverage section: 30% of the grade is decided by it.
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "VII"
 - `<SECTION_TITLE>` = "Performance Evaluation and Analysis"
@@ -751,7 +735,7 @@ git commit -m "draft final-report §VII performance evaluation and analysis"
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §VIII — drafted in Task 14.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "VIII"
 - `<SECTION_TITLE>` = "Discussion: Limitations and Future Work"
@@ -791,7 +775,7 @@ git commit -m "draft final-report §VIII limitations and future work"
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[TODO §IX — drafted in Task 15.]` and `[TODO references — drafted in Task 15.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "IX + References"
 - `<SECTION_TITLE>` = "Conclusion and References"
@@ -891,7 +875,7 @@ If revisions are needed, dispatch a focused subagent (Opus 4.7, with humanizer s
 **Files:**
 - Modify: `doc/final-report/draft.md` (replace `[ABSTRACT — drafted last, after §VII headline numbers are final.]`)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 - `<SECTION_ID>` = "Abstract"
 - `<SECTION_TITLE>` = "Abstract"
@@ -1060,7 +1044,7 @@ git commit -m "scaffold IEEE LaTeX skeleton for final report"
 **Files:**
 - Create: `doc/final-report/figures/fig1_pipeline.tex`
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 Use Agent tool with `model: opus`. Prompt:
 
@@ -1096,7 +1080,7 @@ git commit -m "render figure 1: top-level pipeline block diagram"
 **Files:**
 - Create: `doc/final-report/figures/fig2_predictor.tex`
 
-- [ ] **Step 1: Dispatch with parameters** (same template as Task 20, swap "Figure 1" → "Figure 2", `fig1_pipeline.tex` → `fig2_predictor.tex`, point at the figure-guide.md entry "Figure 2 — gshare + RAS branch predictor")
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete) (same template as Task 20, swap "Figure 1" → "Figure 2", `fig1_pipeline.tex` → `fig2_predictor.tex`, point at the figure-guide.md entry "Figure 2 — gshare + RAS branch predictor")
 - [ ] **Step 2: Verify compile**
 - [ ] **Step 3: Commit**
 
@@ -1138,7 +1122,7 @@ git commit -m "render figure 4: store-to-load forwarding lanes"
 **Files:**
 - Create: `doc/final-report/figures/fig5_timing.tex`
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 Same template as Task 20, but flag that this is a *timing* diagram, not a block diagram.
 
@@ -1163,7 +1147,7 @@ git commit -m "render figure 5: early-tag-broadcast timing"
 **Files:**
 - Modify: `doc/final-report/main.tex` (fill in all `% [Paste from draft.md ...]` placeholders)
 
-- [ ] **Step 1: Dispatch with parameters**
+- [x] **Step 1: Dispatch with parameters** (all Phase-2 drafting complete)
 
 Use Agent tool with `model: opus`. Prompt:
 
