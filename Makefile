@@ -111,8 +111,9 @@ else
 endif
 
 # the Verilog Compiler command and arguments
+EXTRA_DEFINES ?= ""
 VCS = SW_VCS=2020.12-SP2-1 vcs -CFLAGS "-I /homes/user/fac/tk3070/conda/include" -sverilog +incdir+verilog +vc -Mupdate -line -full64 -kdb -lca -nc \
-      -debug_access+all+reverse $(VCS_BAD_WARNINGS) +define+CLOCK_PERIOD=$(CLOCK_PERIOD)ps
+      -debug_access+all+reverse $(VCS_BAD_WARNINGS) +define+CLOCK_PERIOD=$(CLOCK_PERIOD)ps $(EXTRA_DEFINES)
 # a SYNTH define is added when compiling for synthesis that can be used in testbenches
 
 # remove certain warnings that generate MB of text but can be safely ignored
