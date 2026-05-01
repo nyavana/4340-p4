@@ -66,7 +66,7 @@ addi x11, x12, 1     # independent of the load, ready immediately
 add  x13, x10, x11   # depends on the load result in x10
 ```
 
-When the load misses the cache, an in-order pipeline freezes the `addi` behind it even though the `addi` reads `x12` and writes `x11`, neither of which the load touches. Our RS dispatches all three, sees that the `addi`'s sources are already in the register file, and issues it to an ALU on the next cycle; the `addi` finishes and broadcasts on the CDB while the load is still talking to the D-cache. The dependent `add` waits in the RS for the load's tag and only issues once that tag appears on the CDB.
+An in-order pipeline would freeze the `addi` behind the load even though the `addi`'s sources are already in the register file; our RS dispatches all three, sees the `addi` is ready, and issues it to an ALU while the load is still talking to the D-cache, so the `addi` finishes and broadcasts on the CDB ahead of the load. The dependent `add` waits in the RS for the load's tag and only issues once that tag appears on the CDB.
 
 ## V. Advanced Features
 
