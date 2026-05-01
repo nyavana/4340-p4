@@ -52,7 +52,7 @@ The pattern is generic. Any program with a chain of RAW dependencies
 running through the ALU and the CDB will eventually land in a state
 that trips it. That is why almost every "tight loop" program in
 `programs/` was hanging before this fix, including the C programs that
-[`milestone3-report.md`](milestone3-report.md) blamed on "tight memory
+[`milestone3-report.md`](../weekly-reports/milestone3-report.md) blamed on "tight memory
 loops with no slack." The LSQ wasn't the problem. The diagnosis was
 wrong.
 

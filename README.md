@@ -246,7 +246,7 @@ up until time freezes. The week 4 doc guessed the loop was at the
 `icache` / `test/mem.sv` boundary; it nailed the *kind* of bug
 (delta-cycle storm) but missed the location. The actual loop was in the
 RS issue selector and got fixed post-milestone-3. See
-[doc/rs-issue-loop-fix.md](doc/rs-issue-loop-fix.md) and the
+[doc/base-design/rs-issue-loop-fix.md](doc/base-design/rs-issue-loop-fix.md) and the
 [Post-milestone-3 update](#post-milestone-3-rs-issue-selector-fix)
 section below.
 
@@ -260,8 +260,8 @@ milestone 2 bug nobody noticed until the first C program tried to call a
 function and crashed on a wild jump.
 
 For the full writeup of what changed and why, see
-[`doc/milestone3-report.md`](doc/milestone3-report.md). The per-program
-table is in [`doc/milestone3-results.md`](doc/milestone3-results.md).
+[`doc/weekly-reports/milestone3-report.md`](doc/weekly-reports/milestone3-report.md). The per-program
+table is in [`doc/weekly-reports/milestone3-results.md`](doc/weekly-reports/milestone3-results.md).
 
 ### What got built
 
@@ -306,9 +306,9 @@ wasn't in the milestone-3 results table) were unblocked by a
 post-milestone-3 fix to the RS issue selector. See the
 [Post-milestone-3](#post-milestone-3-rs-issue-selector-fix) section
 below for the explanation, or
-[doc/rs-issue-loop-fix.md](doc/rs-issue-loop-fix.md) for the full
+[doc/base-design/rs-issue-loop-fix.md](doc/base-design/rs-issue-loop-fix.md) for the full
 writeup. The pre-fix milestone-3 snapshot is preserved in
-[doc/milestone3-results.md](doc/milestone3-results.md).
+[doc/weekly-reports/milestone3-results.md](doc/weekly-reports/milestone3-results.md).
 
 ```
                   full pipeline test results
@@ -406,7 +406,7 @@ tree; only the `rs.sv` selector change was applicable here.
 Full writeup, including the loop diagram, the cycle-2192 trace, the
 per-program before/after table, and the caveat about what "halts
 cleanly" does and doesn't verify, is in
-[doc/rs-issue-loop-fix.md](doc/rs-issue-loop-fix.md).
+[doc/base-design/rs-issue-loop-fix.md](doc/base-design/rs-issue-loop-fix.md).
 
 Commit:
 [`194b97d`](https://github.com/nyavana/4340-p4/commit/194b97d)
@@ -422,7 +422,7 @@ can be in flight at once; on a mispredict the ROB raises a one-cycle
 and MULT and redirects the PC.
 
 Base design is signed off. Evidence is in
-[`doc/base-design-verification.md`](doc/base-design-verification.md): all
+[`doc/base-design/base-design-verification.md`](doc/base-design/base-design-verification.md): all
 6 tested modules pass in sim and synth, and every one of the 34 programs
 halts on WFI both on `milestone4` and on the same commit rebuilt with
 `+define+SERIALIZE_BRANCHES` (the diagnostic serialized-front-end ifdef
@@ -438,7 +438,7 @@ follow-up.
 
 Four integration bugs showed up during bring-up, all hidden by the
 old front-end serialization. They are written up in full in the
-[branch-predictor report](doc/branch-predictor-report.md):
+[branch-predictor report](doc/base-design/branch-predictor-report.md):
 
 1. JAL/JALR silent-zero: `verilog/rs.sv` carries `branch_NPC` per
    entry and the CDB broadcasts it for uncond branches.
@@ -455,7 +455,7 @@ old front-end serialization. They are written up in full in the
 
 For the module design, full cycle-count table, prediction accuracy
 numbers, and known limitations (no RAS, direct-mapped BTB), see
-[`doc/branch-predictor-report.md`](doc/branch-predictor-report.md).
+[`doc/base-design/branch-predictor-report.md`](doc/base-design/branch-predictor-report.md).
 
 ## Progress: early tag broadcast (advanced feature, correctness-only)
 
@@ -495,4 +495,4 @@ ALU is `!mult_done_valid`), so the consumer still issues on cycle N+2
 whether or not ETB fires.  The speed-up materializes once the second
 CDB arrives with 2-way superscalar (a teammate's in-flight feature).
 Details and the full cycle table are in
-[`doc/early-tag-broadcast-report.md`](doc/early-tag-broadcast-report.md).
+[`doc/advanced-features/early-tag-broadcast-report.md`](doc/advanced-features/early-tag-broadcast-report.md).

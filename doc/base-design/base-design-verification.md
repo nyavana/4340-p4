@@ -164,7 +164,7 @@ serialized run; all `m4` columns come from `output/<prog>.out` after
 - Speedups on branch-heavy benchmarks (`fib_rec`, `insertionsort`,
   `insertion`, `sort_search`, `fc_forward`, `outer_product`,
   `quicksort`) match the numbers already reported in `CLAUDE.md`
-  ("Current status") and `doc/branch-predictor-report.md` — the
+  ("Current status") and `branch-predictor-report.md` — the
   baseline source is different (SERIALIZE_BRANCHES instead of the
   removed `milestone3-fix` tag) but the deltas agree to within
   rounding.
@@ -277,7 +277,7 @@ No decision is made here — this change only records the measurement.
 ## 5. Deferred proposal items
 
 Per `design.md` decision D4, the following items from
-`doc/project-proposal.md` are **intentionally deferred** to the
+`../project-proposal.md` are **intentionally deferred** to the
 superscalar advanced feature and are not implemented in the base design:
 
 - **Second simple ALU.** A second ALU only earns a second CDB once the
@@ -288,7 +288,7 @@ superscalar advanced feature and are not implemented in the base design:
   when the ALU is contended, which is a superscalar problem.
 
 Both are scoped into the 2-way superscalar change, which is the next
-advanced feature on the roadmap per `doc/project-overview.md`. Flagged
+advanced feature on the roadmap per `../project-overview.md`. Flagged
 here so the deferral is on the record.
 
 ---
@@ -373,7 +373,7 @@ spec requires the synth pass count to equal the sim pass count.
 | Document includes per-program regression table | §3.2 |
 | Document includes full-pipeline timing result | §4 |
 | Document calls out deferred proposal items | §5 |
-| Top-level docs reference the sign-off | §8 of `doc/project-overview.md`, "Current status" of `CLAUDE.md`, milestone-4 section of `README.md` — all three link to this file |
+| Top-level docs reference the sign-off | §8 of `../project-overview.md`, "Current status" of `CLAUDE.md`, milestone-4 section of `README.md` — all three link to this file |
 | Humanizer output reviewed | Pending — `/humanizer` pass to be run on this document and the three status-section edits before final sign-off |
 | Implementation ends with uncommitted changes | No `git add` / `git commit` run by implementation; hand-off is §10 of `tasks.md` |
 

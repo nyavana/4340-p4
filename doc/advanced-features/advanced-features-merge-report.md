@@ -13,7 +13,7 @@ The team carved the work into eight branches on `CSEE4340-26/p4.GaPiChiXuXu`. Th
 | 1 | `feat-dcache-prefetch` | next-line stream-buffer prefetcher | yes (`bd78846`) | Brought in stream-buffer infrastructure that icache also uses. |
 | 2 | `2_way_superscalar` | difficult: dual-issue dispatch / commit | yes (`a53ee19`, functional code only) | Tip commits `35fb896` and `0c5cbd2` weren't pulled, but the DC compatibility fix in `35fb896` was independently re-applied as `bd719c8`, so the synth-clean state landed anyway. |
 | 3 | `assoc_cache` | 2-way set-associative dcache | yes, transitively (tip `6d046a0`) | Reachable through the dcache-prefetch chain. |
-| 4 | `early-tag-broadcast` | difficult: MULT FU early wakeup | yes (`3825a2f`) | The only feature with an in-tree report (`doc/early-tag-broadcast-report.md`). |
+| 4 | `early-tag-broadcast` | difficult: MULT FU early wakeup | yes (`3825a2f`) | The only feature with an in-tree report (`early-tag-broadcast-report.md`). |
 | 5 | `gshare` | full-width-GHR XOR predictor | yes (`e5c1e66`) | Replaces the bimodal direction predictor. |
 | 6 | `feat-ras-cz2931` | 16-entry Return Address Stack | yes (`5f3e5e0`) | Merge title is "RAS + gshare GHR combined". |
 | 7 | `feat-stlf-cz2931` | store-to-load forwarding | yes (`dc484b0`) | Most recent merge, head of `milestone3`. |
@@ -118,7 +118,7 @@ A few small programs show worse branch accuracy (`fib` 86.66 → 61.90 %, `paral
 
 Every `.syn.wb` is byte-identical to its `.wb`. `cmp -s output/<prog>.wb output/<prog>.syn.wb` succeeds on all 34 programs. The synthesized gate-level netlist commits the same architectural register-write stream as the RTL, and every cycle count is exactly RTL + 1 (the standard Synopsys gate-level reset offset).
 
-The committed `output/*.wb` baselines on `upstream/2_way_syn_and_out` (April 26 snapshot) differ from the current run on 31 / 34 programs. Inspecting `no_hazard` shows the current trace prints every retiring instruction while the baseline only printed slot 0; that's consistent with the 2-way commit stage adding a second writeback slot to the printer after the snapshot was taken. The remaining divergences on long programs are loop-iteration value reorderings, not architectural divergence. The sim ↔ syn byte-identity above rules out any speculation-vs-architecture mismatch within the merged stack itself. The right correctness baseline going forward is a `+define+SERIALIZE_BRANCHES` rebuild on this same commit, which is the canonical comparison from `doc/base-design-verification.md` and is the §10.1 follow-up here.
+The committed `output/*.wb` baselines on `upstream/2_way_syn_and_out` (April 26 snapshot) differ from the current run on 31 / 34 programs. Inspecting `no_hazard` shows the current trace prints every retiring instruction while the baseline only printed slot 0; that's consistent with the 2-way commit stage adding a second writeback slot to the printer after the snapshot was taken. The remaining divergences on long programs are loop-iteration value reorderings, not architectural divergence. The sim ↔ syn byte-identity above rules out any speculation-vs-architecture mismatch within the merged stack itself. The right correctness baseline going forward is a `+define+SERIALIZE_BRANCHES` rebuild on this same commit, which is the canonical comparison from `../base-design/base-design-verification.md` and is the §10.1 follow-up here.
 
 ## 6. Full-pipeline synthesis (`synth/pipeline.vg`)
 
@@ -130,7 +130,7 @@ The committed `output/*.wb` baselines on `upstream/2_way_syn_and_out` (April 26 
 | Worst (violated), after STLF pipelining | −244.54 ps | same start/end cone (3 endpoints) |
 | Worst met | +123.30 ps | (best of the in-clock-domain paths) |
 
-Three endpoints violate, all in the same `LSQ-head → MULT-stage-0` cone. Compared to the pre-merge baseline in `doc/base-design-verification.md` §4 (−309.07 ps, worst endpoint on `rs_0/entries_reg[*][src_ready] → mult_0/mstage[0]/product_sum_reg[*]`):
+Three endpoints violate, all in the same `LSQ-head → MULT-stage-0` cone. Compared to the pre-merge baseline in `../base-design/base-design-verification.md` §4 (−309.07 ps, worst endpoint on `rs_0/entries_reg[*][src_ready] → mult_0/mstage[0]/product_sum_reg[*]`):
 
 The critical path moved. It used to be "RS issue-output → MULT stage 0" and is now "LSQ head data → MULT stage 0". The cause was the store-to-load-forwarding mux added by STLF: a forwarded load value could become a multiplier operand, and the combinational path ran from the LSQ head register through the forward comparator and mux, through the operand-select on the RS issue output, and into the MULT stage-0 product accumulator.
 
@@ -154,7 +154,7 @@ Of the six advanced features merged into milestone3, only one has an in-tree rep
 
 | Feature | Report exists? |
 |---|---|
-| early-tag-broadcast | yes (`doc/early-tag-broadcast-report.md`) |
+| early-tag-broadcast | yes (`early-tag-broadcast-report.md`) |
 | 2-way superscalar | no |
 | dcache prefetch (stream buffer) | no |
 | 2-way associative dcache | no |

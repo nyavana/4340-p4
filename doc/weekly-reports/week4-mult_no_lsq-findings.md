@@ -9,7 +9,7 @@ should start by auditing `verilog/icache.sv`, `verilog/mem.sv` (or
 
 ## What the plan originally said
 
-From `doc/week4-followup-plan.md`:
+From `week4-followup-plan.md`:
 
 > `mult_no_lsq` nondeterminism — the merged pipeline sometimes produces 44
 > correct writebacks in 45 seconds, other times produces 0 in 10+ minutes.
