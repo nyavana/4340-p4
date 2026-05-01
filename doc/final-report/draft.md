@@ -70,9 +70,21 @@ An in-order pipeline would freeze the `addi` behind the load even though the `ad
 
 ## V. Advanced Features
 
-[TABLE I: Spec-compliance feature mapping — 7 rows.]
+TABLE I. Advanced features implemented in this design and how each one maps onto the spec's §4.2 categories.
 
-[TODO §V opener — drafted in Task 6.]
+| # | Feature | Spec category (§4.2) | Tier |
+|---|---|---|---|
+| 1 | 2-way superscalar | Superscalar execution | difficult |
+| 2 | Early tag broadcast | Early tag broadcast (L7) | difficult |
+| 3 | gshare predictor | Fetch, sophisticated branch predictors † | simpler |
+| 4 | Return Address Stack | Fetch, return address stack | simpler |
+| 5 | Store-to-load forwarding | Memory hierarchy, load/store forwarding | simpler |
+| 6 | Next-line prefetch (stream buffer) | Memory hierarchy, prefetching † | simpler |
+| 7 | 2-way set-associative D-cache | Memory hierarchy, associative caches † | simpler |
+
+We layered seven advanced features on top of the base out-of-order pipeline: two from the difficult tier and five from the simpler tier. The assignment asks for at least one difficult feature alongside other simpler ones, so the count works out. Each of the seven gets its own subsection below, and Table I is the index the reader can use to track which subsection covers which spec category.
+
+The subsections follow the same shape every time. Each one opens with the problem the feature is trying to solve, in plain language that does not assume a hardware background. Then it describes the design we built, the tradeoffs we accepted (area, timing, complexity, or a small loss elsewhere in the pipeline), and finally the result we measured. The two difficult features get dedicated subsections of their own (§V.A for 2-way superscalar and §V.B for early tag broadcast). The five simpler features are grouped under shared parents to keep related design decisions together: branch-prediction enhancements in §V.C, D-cache enhancements in §V.D, and store-to-load forwarding in §V.E. Even when two leaves share a parent, each leaf still gets its own four-part treatment, so the seven-feature count stays clear and the per-feature reasoning never collapses into a single paragraph.
 
 ### V.A. 2-way Superscalar
 
