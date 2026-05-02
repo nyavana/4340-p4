@@ -1,0 +1,109 @@
+\begin{tikzpicture}[
+    >={Stealth[length=1.4mm]},
+    font=\footnotesize,
+    box/.style    = {draw, rounded corners=0.5mm, minimum height=4.6mm,
+                     minimum width=12mm, inner xsep=1mm, inner ysep=0.5mm,
+                     align=center},
+    store/.style  = {box, minimum width=15mm, minimum height=7mm},
+    io/.style     = {minimum height=3.5mm, inner sep=0.4mm},
+    op/.style     = {draw, circle, inner sep=0pt, minimum size=3.5mm,
+                     font=\scriptsize},
+    mux/.style    = {draw, trapezium, trapezium left angle=70,
+                     trapezium right angle=70, trapezium stretches=true,
+                     minimum width=18mm, minimum height=5mm,
+                     shape border rotate=180, inner sep=0.4mm,
+                     font=\footnotesize},
+    pred/.style   = {->, semithick},
+    upd/.style    = {->, dashed, draw=gray!70, semithick},
+    lab/.style    = {font=\scriptsize, inner sep=0.3mm}
+]
+
+% ---------------- inputs (top row) ----------------
+\node[io] (pc)   at (0.0, 0)  {\texttt{PC}};
+\node[io] (upc)  at (1.9, 0)  {\texttt{update\_PC}};
+\node[io] (utk)  at (3.9, 0)  {\texttt{update\_taken}};
+\node[io] (pir)  at (6.3, 0)  {\texttt{predict\_is\_return}};
+
+% ---------------- index logic row ----------------
+\node[op]                       (xor)  at (-0.4,-0.9) {$\oplus$};
+\node[box,minimum width=11mm]  (bhti) at (-0.4,-1.7) {bht\_idx};
+\node[box,minimum width=11mm]  (btbi) at ( 1.7,-1.7) {btb\_idx};
+
+% ---------------- state storage row ----------------
+\node[store] (bht) at (-0.4,-3.0) {BHT\\\scriptsize 64$\times$2-bit};
+\node[store] (btb) at ( 1.7,-3.0) {BTB\\\scriptsize 32 entries};
+\node[store] (ras) at ( 3.95,-3.0) {RAS\\\scriptsize 16 entries};
+\node[store] (ghr) at ( 6.2,-3.0) {GHR\\\scriptsize shift reg};
+
+% ---------------- decision row ----------------
+\node[op]   (and) at (4.95,-4.3) {\&};
+\node[mux]  (mux) at (1.7,-4.7)  {MUX};
+
+% ---------------- outputs ----------------
+\node[io] (ptk) at (0.9,-5.8) {\texttt{pred\_taken}};
+\node[io] (ptg) at (2.6,-5.8) {\texttt{pred\_target}};
+
+% routing helper coordinates
+\coordinate (ghr_route) at (-1.5,-0.9);
+
+% ============= predict path (solid) =============
+% PC stub -> branch point
+\coordinate (pc_t) at (0.0,-0.45);
+\draw[pred,-] (pc.south) -- (pc_t);
+% PC stub -> XOR
+\draw[pred] (pc_t) -| (xor.north);
+% PC stub -> btb_idx
+\draw[pred] (pc_t) -| (btbi.north);
+% GHR -> (route up and over) -> XOR east input
+\draw[pred] (ghr.north) -- ++(0,0.3) -| (ghr_route)
+            -- node[lab,above,pos=0.65]{GHR} (xor.west);
+% XOR -> bht_idx
+\draw[pred] (xor.south) -- (bhti.north);
+% indices -> storage
+\draw[pred] (bhti.south) -- (bht.north);
+\draw[pred] (btbi.south) -- (btb.north);
+
+% BHT counter[1] -> MUX (west input)
+\draw[pred] (bht.south) |- node[lab,pos=0.75,above]{ctr[1]} (mux.west);
+% BTB target -> MUX (top / data input)
+\draw[pred] (btb.south) -- node[lab,right,pos=0.45]{btb\_target} (mux.north);
+
+% predict_is_return -> AND (right input via the top)
+\draw[pred] (pir.south) -- ++(0,-0.5) -| (and.north);
+% RAS count!=0 -> AND (left input)
+\draw[pred] (ras.south) -- node[lab,right,pos=0.55]{count$\neq$0} (and.west);
+
+% AND -> MUX select (right side as ras_override)
+\draw[pred] (and.south) |- node[lab,pos=0.78,above]{ras\_override} (mux.east);
+
+% RAS top -> MUX (alternate target along the bottom)
+\draw[pred] (ras.south) -- ++(0,-1.4) -|
+            node[lab,pos=0.55,below]{ras\_top}
+            ([xshift=4mm]mux.south);
+
+% MUX -> outputs
+\draw[pred] ([xshift=-3mm]mux.south) |- (ptk.north);
+\draw[pred] ([xshift= 3mm]mux.south) |- (ptg.north);
+
+% ============= update path (dashed) =============
+% update_taken -> BHT (saturating +/-1)
+\draw[upd] (utk.south) -- ++(0,-0.25) -|
+           node[lab,pos=0.92,left]{$\pm1$}
+           ([xshift=3mm]bht.north);
+% update_PC + target -> BTB write
+\draw[upd] (upc.south) -- ++(0,-0.5) -|
+           node[lab,pos=0.92,right]{write}
+           ([xshift=-3mm]btb.north);
+% update_taken -> GHR shift-in (feedback shift)
+\draw[upd] (utk.east) -- ++(0.15,0) |-
+           node[lab,pos=0.85,above]{shift}
+           ([yshift=2.5mm]ghr.north);
+
+% ============= annotations =============
+\node[lab,align=left,anchor=north west] at (-0.6,-6.6) {%
+    GHR\_W = BHT\_IDX\_W (full-width gshare)\\
+    sat. counter $00\!\ldots\!11$, reset $01$\\
+    RAS: push on JAL$\to$ra; pop on JALR x0,ra,0
+};
+
+\end{tikzpicture}
