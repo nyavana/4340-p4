@@ -1,0 +1,120 @@
+% Figure 1 -- Top-level pipeline block diagram
+% Five vertical bands: Fetch | Decode | Dispatch/Rename | Issue/Execute | Commit
+% Uses only TikZ libraries already loaded in main.tex:
+%   shapes.geometric, arrows.meta, positioning, fit
+\begin{tikzpicture}[
+    scale=0.85, transform shape,
+    every node/.style={color=black, font=\footnotesize},
+    box/.style={draw, rectangle, minimum height=6mm, minimum width=14mm,
+                align=center, inner sep=2pt, color=black},
+    smallbox/.style={draw, rectangle, minimum height=4.5mm, minimum width=10mm,
+                     align=center, inner sep=1.5pt, font=\scriptsize, color=black},
+    bandlabel/.style={font=\scriptsize\itshape, color=black},
+    annot/.style={font=\scriptsize, color=black, align=center},
+    arrow/.style={-{Latex[length=1.5mm]}, color=black, thick},
+    sideband/.style={-{Latex[length=1.5mm]}, color=black, dashed, thick},
+    >={Latex[length=1.5mm]}
+]
+
+% --- Fetch band ---
+\node[box] (pc) at (0, 0) {PC reg};
+\node[smallbox, below=2mm of pc] (bp) {branch\\predictor};
+\node[box, above=4mm of pc] (ic) {I-cache};
+\node[smallbox, above right=-1mm and -8mm of ic, fill=white] (sb) {stream\\buffer};
+
+% --- Decode band ---
+\node[box, right=12mm of ic] (dec) {decoder};
+
+% --- Dispatch band ---
+\node[box, right=14mm of dec] (rob) {ROB / RAT};
+\node[box, above=4mm of rob] (rs) {RS};
+\node[box, below=4mm of rob] (lsq) {LSQ};
+
+% --- Issue/Execute band ---
+\node[box, right=14mm of rs, yshift=3mm] (alu0) {ALU 0};
+\node[box, below=2mm of alu0] (alu1) {ALU 1};
+\node[box, below=2mm of alu1, minimum width=18mm] (mult) {MULT\\(pipelined)};
+\node[box, below=2mm of mult] (br) {Branch\\resolver};
+\node[box, below=2mm of br] (dc) {D-cache};
+
+% --- Commit band ---
+\node[box, right=18mm of mult] (rf) {Regfile};
+
+% --- Band labels (above the diagram) ---
+\node[bandlabel, above=14mm of ic] (lblF) {Fetch};
+\node[bandlabel] at (dec |- lblF) {Decode};
+\node[bandlabel] at (rob |- lblF) {Dispatch / Rename};
+\node[bandlabel] at (alu0 |- lblF) {Issue / Execute};
+\node[bandlabel] at (rf  |- lblF) {Commit};
+
+% --- Solid arrows (datapath) ---
+% PC bus
+\draw[arrow] (pc.north) -- node[right, font=\scriptsize] {PC} (ic.south);
+\draw[arrow] (pc.south) -- (bp.north);
+% I-cache to decoder (instruction bus)
+\draw[arrow] (ic.east) -- node[above, font=\scriptsize] {instr} (dec.west);
+
+% Decoder to dispatch fork (ROB, RS, LSQ)
+\draw[arrow] (dec.east) -- (rob.west);
+\draw[arrow] (dec.east) -| (rs.west);
+\draw[arrow] (dec.east) -| (lsq.west);
+
+% Dispatch to execute units
+\draw[arrow] (rs.east) -- (alu0.west);
+\draw[arrow] (rs.east) -- (alu1.west);
+\draw[arrow] (rs.east) -| (mult.north);
+\draw[arrow] (rs.east) -| (br.north);
+\draw[arrow] (lsq.east) -- (dc.west);
+
+% Commit: ROB to Regfile
+\draw[arrow] (rob.east) -| (rf.south);
+
+% --- CDB (single bus from execute back to RS, ROB, LSQ) ---
+% A vertical spine sits to the right of all execute units; each unit feeds it,
+% and horizontals from the spine return to RS / ROB / LSQ.
+\coordinate (spineTop)  at (alu0.east -| rf.west);
+\coordinate (spineMid)  at (mult.east -| rf.west);
+\coordinate (spineBot)  at (dc.east   -| rf.west);
+% Move the spine slightly left of Regfile so we don't collide with it.
+\coordinate (spineTopL) at ([xshift=-6mm] spineTop);
+\coordinate (spineMidL) at ([xshift=-6mm] spineMid);
+\coordinate (spineBotL) at ([xshift=-6mm] spineBot);
+\coordinate (spineALU1) at (alu1.east -| spineTopL);
+\coordinate (spineBR)   at (br.east   -| spineTopL);
+% Per-unit feeders into the spine
+\draw[arrow] (alu0.east) -- (spineTopL);
+\draw[arrow] (alu1.east) -- (spineALU1);
+\draw[arrow] (mult.east) -- (spineMidL);
+\draw[arrow] (br.east)   -- (spineBR);
+\draw[arrow] (dc.east)   -- (spineBotL);
+% Vertical spine
+\draw[thick] (spineTopL) -- (spineBotL);
+% Returns to RS, ROB, LSQ (these go back to the left, so we route below RS / above LSQ)
+\draw[arrow] (spineTopL) |- node[above, pos=0.9, font=\scriptsize] {CDB} (rs.east);
+\draw[arrow] (spineMidL) -- (rob.east);
+\draw[arrow] (spineBotL) |- (lsq.east);
+
+% CDB label
+\node[annot, right=1mm of spineTopL, yshift=2mm] {CDB (tag,\\value, valid)};
+
+% --- Dashed sideband: early-tag from MULT to RS ---
+\draw[sideband] (mult.west) .. controls +(-6mm,6mm) and +(-6mm,-6mm) ..
+    node[left, pos=0.5, font=\scriptsize, align=right] {early-tag\\(wakeup only)} (rs.south west);
+
+% --- Dashed sideband: store_done from D-cache to ROB ---
+\draw[sideband] (dc.west) -| ([xshift=-4mm] lsq.west) |-
+    node[below, pos=0.25, font=\scriptsize] {store\_done (no value)} (rob.south);
+
+% --- Dashed mispredict redirect: ROB to PC reg, curved feedback above the bands ---
+\draw[sideband] (rob.north) .. controls +(0,18mm) and +(0,18mm) ..
+    node[above, midway, font=\scriptsize] {mispredict\_target} (pc.north west);
+
+% --- Annotations ---
+\node[annot, below=10mm of dc] (annot1) {memory ops bypass RS};
+\draw[->, color=black, dotted] (annot1.north) -| (lsq.south);
+
+\node[annot, below=14mm of rob, xshift=-12mm] (annot2)
+    {ROB \emph{is} phys.\ reg.\ file\\(PHYS\_REG\_SZ = 32 + ROB\_SZ)};
+\draw[->, color=black, dotted] (annot2.north) -- (rob.south west);
+
+\end{tikzpicture}
