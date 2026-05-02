@@ -1,0 +1,181 @@
+% Figure 3 -- D-cache organization
+% Left-to-right: address fields -> cache storage / comparators -> hit mux -> data out.
+% Stream buffer drawn below as a parallel path to the memory bus (dashed wires).
+% Uses only TikZ libraries already loaded in main.tex:
+%   shapes.geometric, arrows.meta, positioning, fit
+\begin{tikzpicture}[
+    scale=0.85, transform shape,
+    every node/.style={color=black, font=\footnotesize},
+    box/.style={draw, rectangle, minimum height=6mm, minimum width=14mm,
+                align=center, inner sep=2pt, color=black},
+    smallbox/.style={draw, rectangle, minimum height=4.5mm, minimum width=8mm,
+                     align=center, inner sep=1.5pt, font=\scriptsize, color=black},
+    cell/.style={draw, rectangle, minimum height=4.2mm, minimum width=22mm,
+                 align=center, inner sep=1.5pt, font=\scriptsize, color=black},
+    fieldcell/.style={draw, rectangle, minimum height=6mm, align=center,
+                      inner sep=1.5pt, font=\scriptsize, color=black},
+    cmp/.style={draw, isosceles triangle, isosceles triangle apex angle=60,
+                minimum height=8mm, inner sep=1pt, font=\scriptsize, color=black},
+    mux/.style={draw, trapezium, trapezium left angle=70, trapezium right angle=70,
+                minimum height=8mm, inner sep=1.5pt, shape border rotate=270,
+                font=\scriptsize, color=black},
+    annot/.style={font=\scriptsize, color=black, align=center},
+    arrow/.style={-{Latex[length=1.5mm]}, color=black, thick},
+    sideband/.style={-{Latex[length=1.5mm]}, color=black, dashed, thick},
+    >={Latex[length=1.5mm]}
+]
+
+% =========================================================
+% Address decomposition (top-left)
+% =========================================================
+\node[fieldcell, minimum width=14mm] (atag) at (0, 0) {tag\\\tiny 26 b};
+\node[fieldcell, minimum width=10mm, right=0pt of atag] (aset) {set\_idx\\\tiny 4 b};
+\node[fieldcell, minimum width=8mm,  right=0pt of aset] (aoff) {offset\\\tiny 3 b};
+\node[annot, above=0.5mm of aset.north] {\itshape 32-bit address};
+
+% =========================================================
+% Cache storage grid (16 sets x 2 ways), abbreviated rows
+% Anchored relative to the address fields by absolute coordinates
+% =========================================================
+\node[cell] (w0r0)  at (3.0, -2.0) {tag\,\textbar\,V\,\textbar\,D\,\textbar\,data};
+\node[cell, below=0pt of w0r0]  (w0r1)   {tag\,\textbar\,V\,\textbar\,D\,\textbar\,data};
+\node[cell, below=0pt of w0r1]  (w0dots) {\vdots};
+\node[cell, below=0pt of w0dots](w0r15)  {tag\,\textbar\,V\,\textbar\,D\,\textbar\,data};
+
+\node[cell, right=0pt of w0r0]   (w1r0)   {tag\,\textbar\,V\,\textbar\,D\,\textbar\,data};
+\node[cell, right=0pt of w0r1]   (w1r1)   {tag\,\textbar\,V\,\textbar\,D\,\textbar\,data};
+\node[cell, right=0pt of w0dots] (w1dots) {\vdots};
+\node[cell, right=0pt of w0r15]  (w1r15)  {tag\,\textbar\,V\,\textbar\,D\,\textbar\,data};
+
+% Column headers
+\node[annot, above=0.5mm of w0r0] {way 0};
+\node[annot, above=0.5mm of w1r0] {way 1};
+
+% Set-row labels on the far left of the grid
+\node[annot, left=1mm of w0r0]  {set 0};
+\node[annot, left=1mm of w0r1]  {set 1};
+\node[annot, left=1mm of w0r15] {set 15};
+
+% Group label below the grid
+\node[draw, thick, fit=(w0r0) (w1r15), inner sep=2pt] (gridbox) {};
+\node[annot, below=0.5mm of gridbox.south]
+    {\itshape dcache\_data[16][2]};
+
+% LRU column (one bit per set, just to the right of the grid)
+\node[smallbox, right=2mm of w1r0,  minimum width=8mm] (lru0)  {LRU};
+\node[smallbox, right=2mm of w1r1,  minimum width=8mm] (lru1)  {LRU};
+\node[smallbox, right=2mm of w1r15, minimum width=8mm] (lru15) {LRU};
+\node[annot, above=0.2mm of lru0.north] {1 b/set};
+
+% =========================================================
+% Comparators (one per way)
+% =========================================================
+\node[cmp, right=10mm of lru0]  (cmp0) {=};
+\node[cmp, right=10mm of lru15] (cmp1) {=};
+\node[annot, above=0pt of cmp0.north] {way\_hit[0]};
+\node[annot, below=0pt of cmp1.south] {way\_hit[1]};
+
+% =========================================================
+% Hit mux + sub-word logic + data out
+% =========================================================
+\node[mux, right=10mm of lru1, minimum height=12mm, minimum width=10mm] (hitmux) {hit mux};
+\node[box, right=10mm of hitmux, minimum width=20mm] (subw)
+    {sub-word logic\\\scriptsize byte mask \& V/D};
+\node[annot, right=4mm of subw] (dout) {data out};
+
+% =========================================================
+% Writeback buffer (below subword block)
+% =========================================================
+\node[box, below=10mm of subw, minimum width=20mm] (wbuf)
+    {writeback\\buffer (1)};
+
+% =========================================================
+% Memory bus (vertical spine on far right)
+% =========================================================
+\coordinate (busTop) at ([xshift=8mm] dout.east  |- subw.north);
+\coordinate (busBot) at ([xshift=8mm] dout.east  |- wbuf.south);
+\coordinate (busFar) at ([yshift=-30mm] busBot);
+\draw[thick] (busTop) -- (busFar);
+\node[annot, right=1mm of busTop, rotate=90, anchor=south west] {memory bus};
+
+% =========================================================
+% Stream buffer (below the cache, parallel path to memory bus)
+% =========================================================
+\node[box, below=14mm of gridbox.south, minimum width=34mm] (sbuf)
+    {stream buffer\\\scriptsize 1-line FIFO + control FSM};
+
+% =========================================================
+% Arrows -- address fanout
+% =========================================================
+% set_idx -> grid (left edge)
+\draw[arrow] (aset.south) |- node[pos=0.9, above, font=\scriptsize] {set\_idx} (gridbox.west);
+% tag -> both comparators (right input)
+\draw[arrow] (atag.east) -- ([xshift=2mm] atag.east)
+    |- node[pos=0.95, above, font=\scriptsize] {tag} (cmp0.north);
+\draw[arrow] (atag.east) -- ([xshift=2mm] atag.east)
+    |- (cmp1.south);
+% offset -> sub-word logic
+\draw[arrow] (aoff.east) -- ([xshift=4mm] aoff.east)
+    |- node[pos=0.95, right, font=\scriptsize] {offset} (subw.north);
+
+% =========================================================
+% Arrows -- way storage to comparators / hit mux
+% =========================================================
+% way[i].tag -> comparator[i]
+\draw[arrow] (w0r0.north east) -- (cmp0.west);
+\draw[arrow] (w1r15.south east) -- (cmp1.west);
+
+% Comparator outputs -> hit mux (selects)
+\draw[arrow] (cmp0.east) -| (hitmux.north);
+\draw[arrow] (cmp1.east) -| (hitmux.south);
+
+% Way data -> hit mux (data inputs)
+\draw[arrow] (w0r0.east) -- ([xshift=2mm] w0r0.east) |- (hitmux.west);
+\draw[arrow] (w1r0.east) -- ([xshift=2mm] w1r0.east) |- (hitmux.west);
+
+% Hit mux -> sub-word -> data out
+\draw[arrow] (hitmux.east) -- (subw.west);
+\draw[arrow] (subw.east) -- (dout.west);
+
+% LRU update on hit (annotation arrow)
+\draw[arrow, dotted] (hitmux.south west) .. controls +(0,-4mm) and +(2mm,0) ..
+    node[below, font=\scriptsize, pos=0.5] {update LRU} (lru15.east);
+
+% =========================================================
+% Memory traffic -- solid (demand) arrows
+% =========================================================
+% Miss request: from sub-word logic up onto bus
+\draw[arrow] (subw.north) -- ([yshift=4mm] subw.north) -| (busTop)
+    node[pos=0.25, above, font=\scriptsize] {miss};
+% Refill (LRU pick): from bus back into the grid
+\draw[arrow] ([yshift=-4mm] busTop) -| ([xshift=2mm] gridbox.north east)
+    node[pos=0.85, right, font=\scriptsize] {refill};
+% Dirty eviction -> writeback buffer -> bus
+\draw[arrow] (gridbox.south east) |- (wbuf.west)
+    node[pos=0.85, above, font=\scriptsize] {dirty evict};
+\draw[arrow] (wbuf.east) -| (busBot);
+
+% =========================================================
+% Stream-buffer (speculative) -- dashed arrows
+% =========================================================
+% Arm stream buffer for line+1 after a miss
+\draw[sideband] (subw.south) .. controls +(0,-6mm) and +(2mm,3mm) ..
+    node[right, font=\scriptsize, pos=0.55] {arm line+1} (sbuf.north east);
+% Stream buffer <-> memory bus (prefetch fill)
+\draw[sideband] (sbuf.east) -| (busFar)
+    node[pos=0.45, above, font=\scriptsize] {prefetch};
+% Stream-buffer hit absorbs subsequent miss into the cache without bus traffic
+\draw[sideband] (sbuf.north west) .. controls +(0,8mm) and +(-3mm,-3mm) ..
+    node[left, font=\scriptsize, pos=0.5, align=right] {sb hit\\(no bus)} (gridbox.south west);
+
+% =========================================================
+% Annotations (bottom of figure)
+% =========================================================
+\node[annot, below=4mm of sbuf] (aA)
+    {256\,B total = 16 sets $\times$ 2 ways $\times$ 8\,B};
+\node[annot, below=1mm of aA] (aB)
+    {write-back, write-allocate, byte-granular dirty/valid masks};
+\node[annot, below=1mm of aB]
+    {\itshape stream buffer reused on the I-cache (not shown)};
+
+\end{tikzpicture}
