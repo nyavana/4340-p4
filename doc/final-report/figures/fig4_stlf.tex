@@ -1,0 +1,111 @@
+% Figure 4 — Store-to-load forwarding lanes
+% Left: LSQ as a circular buffer (head/tail, slot fields).
+% Middle: per-load forwarding cone (addr compare, byte-mask intersect, priority encoder).
+% Right: +1-cycle defer latch (dashed) feeding a CDB output port.
+\begin{tikzpicture}[
+    scale=0.85, transform shape,
+    every node/.style={color=black, font=\footnotesize},
+    box/.style={draw, rectangle, minimum height=6mm, minimum width=14mm,
+                align=center, inner sep=2pt, color=black},
+    slot/.style={draw, rectangle, minimum height=11mm, minimum width=11mm,
+                 align=center, inner sep=1pt, font=\scriptsize, color=black},
+    ff/.style={draw, rectangle, minimum height=8mm, minimum width=8mm,
+               align=center, inner sep=1pt, font=\scriptsize, color=black},
+    annot/.style={font=\scriptsize, color=black, align=center},
+    arrow/.style={-{Latex[length=1.5mm]}, color=black, thick},
+    defer/.style={-{Latex[length=1.5mm]}, color=black, dashed, thick},
+    stalled/.style={-{Latex[length=1.5mm]}, color=black, thick, densely dotted},
+    >={Latex[length=1.5mm]}
+]
+
+% =========================================================
+% LEFT: LSQ as a row of circular-buffer slots
+% =========================================================
+\node[slot] (s0) at (0, 0)
+    {S$_{i}$\\\textit{is\_store=1}\\addr\_v=1\\data\_r=1\\mask=\texttt{1100}};
+\node[slot, right=0mm of s0] (s1)
+    {S$_{j}$\\\textit{is\_store=1}\\addr\_v=1\\data\_r=1\\mask=\texttt{0011}};
+\node[slot, right=0mm of s1] (sL)
+    {L$_{k}$\\\textit{is\_store=0}\\addr\_v=1\\\,\\mask=\texttt{1111}};
+\node[slot, right=0mm of sL] (s3)
+    {$\cdots$\\\,\\\,\\\,\\\,};
+
+% head / tail pointers
+\node[annot, above=0.5mm of s0] {head $\rightarrow$};
+\node[annot, above=0.5mm of s3] {$\leftarrow$ tail};
+
+% Group label for the LSQ
+\node[annot, below=1mm of s1, xshift=6mm] {LSQ entries (circular buffer)};
+
+% =========================================================
+% MIDDLE: per-load forwarding cone
+% =========================================================
+% Address comparator
+\node[box, right=12mm of s3, yshift=6mm,
+      minimum width=22mm, minimum height=9mm] (cmp)
+    {addr compare\\\scriptsize{addr[XLEN--1:3]}};
+
+% Byte-mask intersect
+\node[box, below=3mm of cmp, minimum width=22mm, minimum height=9mm] (mask)
+    {byte-mask intersect\\\scriptsize{load \& store}};
+
+% Priority encoder: youngest covering store wins
+\node[box, right=8mm of cmp, yshift=-6mm,
+      minimum width=18mm, minimum height=11mm] (pe)
+    {priority enc.\\\scriptsize{youngest covering}\\\scriptsize{store wins}};
+
+% Outcome labels off the byte-mask block
+\node[annot, right=12mm of mask, yshift=4mm]   (full)  {full cover\\$\rightarrow$ forward};
+\node[annot, right=12mm of mask]               (part)  {partial overlap\\$\rightarrow$ block};
+\node[annot, right=12mm of mask, yshift=-4mm]  (none)  {no overlap\\$\rightarrow$ skip};
+
+% =========================================================
+% RIGHT: +1-cycle defer latch and CDB output port
+% =========================================================
+\node[ff, right=14mm of pe] (latch) {FF};
+\node[annot, above=0.5mm of latch] {+1 cycle};
+
+\node[box, right=10mm of latch, minimum width=14mm] (cdb) {CDB port};
+
+% =========================================================
+% ARROWS
+% =========================================================
+% load_addr fanout from load slot to comparator
+\draw[arrow] (sL.east) -- ++(2mm,0) |- (cmp.west)
+    node[pos=0.85, above, font=\scriptsize] {load\_addr};
+% older store addresses to comparator
+\draw[arrow] (s0.north) |- ([yshift=2mm]cmp.west);
+\draw[arrow] (s1.north) |- ([yshift=-2mm]cmp.west);
+
+% load + store masks into the byte-mask intersect
+\draw[arrow] (sL.south) |- ([yshift=2mm]mask.west);
+\draw[arrow] (s0.south) |- ([yshift=-2mm]mask.west);
+
+% comparator + mask outcomes feed priority encoder
+\draw[arrow] (cmp.east) -| (pe.north);
+\draw[arrow] (mask.east) -| (pe.south);
+
+% outcome callouts (full / partial / no-overlap) drawn off the mask block
+\draw[arrow] (mask.east) -- (full.west);
+\draw[arrow] (mask.east) -- (part.west);
+\draw[arrow] (mask.east) -- (none.west);
+
+% forward valid -> latch -> CDB (dashed +1-cycle defer lane)
+\draw[defer] (pe.east) -- node[above, font=\scriptsize] {fwd\_valid} (latch.west);
+\draw[defer] (latch.east) -- node[above, font=\scriptsize] {cycle later} (cdb.west);
+
+% Block path: partial overlap -> load falls through to the D-cache (stalled edge)
+\node[box, below=11mm of mask, minimum width=20mm] (dcache) {D-cache};
+\draw[stalled] (part.south) |- (dcache.east)
+    node[pos=0.7, below, font=\scriptsize] {stall};
+
+% =========================================================
+% ANNOTATIONS
+% =========================================================
+\node[annot, above=4mm of latch, xshift=-2mm]
+    {+1 cycle defer added\\for synth slack};
+
+\node[annot, below=2mm of dcache]
+    {partial overlap blocks;\\load falls through to D-cache};
+
+\end{tikzpicture}
