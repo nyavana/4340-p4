@@ -4,7 +4,7 @@ EECS 4340, Spring 2026.
 
 ## Abstract
 
-[ABSTRACT — drafted last, after §VII headline numbers are final.]
+We built a synthesizable P6-style out-of-order RV32IM processor on top of the in-order Project 3 starter pipeline. The base machine is one instruction wide, and the live build adds 2-way superscalar fetch, decode, dispatch, and commit, plus six other features layered above the base: early tag broadcast, gshare, return address stack, store-to-load forwarding, next-line prefetch, and a 2-way set-associative D-cache. All 34 test programs pass on both the RTL simulator and the synthesized gate-level netlist, and every writeback trace is byte-identical between the two. Across the suite, the seven advanced features cut cycle count by 28.20% on geomean against the OoO base, and branch-prediction accuracy reaches 74.03% on geomean, an arithmetic-mean lift of 8.87 percentage points over the bimodal baseline. One open item: three endpoints in the full-pipeline netlist miss the 1000 ps clock by up to 244.54 ps, even though the netlist is functionally bit-equivalent to the RTL on every program.
 
 ## I. Introduction
 
