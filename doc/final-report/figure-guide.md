@@ -180,4 +180,4 @@ The markdown draft uses `[FIGURE N: caption]` placeholders. This guide is consul
 
 ## Tables (no rendering plan needed)
 
-Tables I–V (per `spec.md` §6) are rendered directly in markdown / LaTeX `tabular`. No special tooling. The only judgment call is **Table III (full 34-row continuation)** — in IEEE two-column it likely needs `\small` font and a column trim (drop one or two of the less load-bearing columns) to fit. Decide at LaTeX-migration time.
+Tables I–V (per `spec.md` §6) are rendered directly in markdown / LaTeX `tabular`. No special tooling. The only judgment call is **Table III (full 33-row continuation)** — in IEEE two-column it likely needs `\small` font and a column trim (drop one or two of the less load-bearing columns) to fit. Decide at LaTeX-migration time.
