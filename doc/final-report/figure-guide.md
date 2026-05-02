@@ -142,7 +142,7 @@ The markdown draft uses `[FIGURE N: caption]` placeholders. This guide is consul
 
 **Annotations:**
 
-- "+1 cycle defer added for synth slack (−504 → −244 ps)".
+- "+1 cycle defer added for synth slack (one-cycle-deferred broadcast; standalone slack contribution unverified after the build-artefacts re-baseline — see merge report §10.3)".
 - "partial overlap blocks; load falls through to D-cache".
 
 **Caption draft:** *"Store-to-load forwarding. A load at the LSQ head compares against older un-committed stores; a clean byte-cover match forwards the value through a one-cycle latch onto the CDB."*

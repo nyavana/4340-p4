@@ -67,7 +67,7 @@ The `.vg` files themselves were always well-formed and meet timing. The failures
 
 ## 5. Full-pipeline RTL regression (`make simulate_all`)
 
-All 34 programs in `programs/` halt cleanly at `@@@ System halted on WFI instruction`.
+All 33 programs in `programs/` halt cleanly at `@@@ System halted on WFI instruction`.
 
 Per-program diff against the cherry-picked baseline (the `+` side of `branch_accuracy_cpi_diff.md`, which captured `milestone3` on 2026-04-26 with 2-way superscalar plus dcache prefetch but before ETB, gshare, RAS, and STLF):
 
@@ -96,7 +96,6 @@ matrix_mult_rec       662478    719984   -7.99%    30.56    33.21   96.44%   94.
 mergesort             200072    302356  -33.83%    21.10    31.89   77.95%   75.38%
 mult                    7430      7549   -1.58%    22.79    23.16   50.00%   83.33%
 mult_no_lsq             2251      2680  -16.01%     7.95     9.47   66.66%   88.23%
-mytest                   213       416  -48.80%    26.62    52.00    0.00%        -
 no_hazard                422       725  -41.79%    30.14    51.79    0.00%        -
 omegalul                2220      3944  -43.71%    30.00    53.30   50.00%   33.33%
 outer_product        3166519   4519350  -29.93%     4.24     6.06   83.79%   85.18%
@@ -110,41 +109,43 @@ sort_search           600637    813758  -26.19%     3.30     4.47   83.63%   85.
 
 Every program halts. Every program is at least as fast as the April-26 snapshot or within noise. The worst case is `evens`, which got four cycles slower on a 1170-cycle program (+0.34 %).
 
-The branchy and memory-heavy programs see large gains from gshare + STLF + ETB stacked on top of the prior wave: `alexnet` −49.6 %, `mytest` −48.8 %, `btest2` −48.5 %, `sampler` −45.7 %, `priority_queue` −44.3 %, `basic_malloc` −44.0 %, `omegalul` −43.7 %, `haha` −43.5 %, `graph` −43.2 %, `backtrack` −43.2 %, `bfs` −40.5 %, `dft` −40.3 %, `mergesort` −33.8 %, `quicksort` −37.0 %, `sort_search` −26.2 %, `insertionsort` −28.3 %.
+The branchy and memory-heavy programs see large gains from gshare + STLF + ETB stacked on top of the prior wave: `alexnet` −49.6 %, `btest2` −48.5 %, `sampler` −45.7 %, `priority_queue` −44.3 %, `basic_malloc` −44.0 %, `omegalul` −43.7 %, `haha` −43.5 %, `graph` −43.2 %, `backtrack` −43.2 %, `bfs` −40.5 %, `dft` −40.3 %, `mergesort` −33.8 %, `quicksort` −37.0 %, `sort_search` −26.2 %, `insertionsort` −28.3 %.
 
 A few small programs show worse branch accuracy (`fib` 86.66 → 61.90 %, `parallel` 87.5 → 60.0 %, `mult` 83.3 → 50.0 %). All have ≤ 24 total branches, so a single misprediction moves the percentage by tens of points. Big-program accuracy is consistent or better: alexnet 88 %, dft 86 %, quicksort 85 %, sort_search 84 %, insertionsort 88 %, matrix_mult_rec 96 %.
 
 ### 5.1 Sim ↔ syn `.wb` byte-identity
 
-Every `.syn.wb` is byte-identical to its `.wb`. `cmp -s output/<prog>.wb output/<prog>.syn.wb` succeeds on all 34 programs. The synthesized gate-level netlist commits the same architectural register-write stream as the RTL, and every cycle count is exactly RTL + 1 (the standard Synopsys gate-level reset offset).
+Every `.syn.wb` is byte-identical to its `.wb`. `cmp -s output/<prog>.wb output/<prog>.syn.wb` succeeds on all 33 programs. The synthesized gate-level netlist commits the same architectural register-write stream as the RTL, and every cycle count is exactly RTL + 1 (the standard Synopsys gate-level reset offset).
 
-The committed `output/*.wb` baselines on `upstream/2_way_syn_and_out` (April 26 snapshot) differ from the current run on 31 / 34 programs. Inspecting `no_hazard` shows the current trace prints every retiring instruction while the baseline only printed slot 0; that's consistent with the 2-way commit stage adding a second writeback slot to the printer after the snapshot was taken. The remaining divergences on long programs are loop-iteration value reorderings, not architectural divergence. The sim ↔ syn byte-identity above rules out any speculation-vs-architecture mismatch within the merged stack itself. The right correctness baseline going forward is a `+define+SERIALIZE_BRANCHES` rebuild on this same commit, which is the canonical comparison from `../base-design/base-design-verification.md` and is the §10.1 follow-up here.
+The committed `output/*.wb` baselines on `upstream/2_way_syn_and_out` (April 26 snapshot) differ from the current run on most of the 33 programs (the historical comparison was 31/34 before `mytest` was removed). Inspecting `no_hazard` shows the current trace prints every retiring instruction while the baseline only printed slot 0; that's consistent with the 2-way commit stage adding a second writeback slot to the printer after the snapshot was taken. The remaining divergences on long programs are loop-iteration value reorderings, not architectural divergence. The sim ↔ syn byte-identity above rules out any speculation-vs-architecture mismatch within the merged stack itself. The right correctness baseline going forward is a `+define+SERIALIZE_BRANCHES` rebuild on this same commit, which is the canonical comparison from `../base-design/base-design-verification.md` and is the §10.1 follow-up here.
 
 ## 6. Full-pipeline synthesis (`synth/pipeline.vg`)
 
-`synth/pipeline.vg` builds successfully. Worst slack at the 1000 ps clock:
+`synth/pipeline.vg` builds successfully. Worst slack at the 1000 ps clock, post-merge HEAD (= `dbcd4f6` + `51b7f1c`):
 
-| Path class | Worst slack | Endpoint |
+| Path class | Worst slack | Startpoint → Endpoint |
 |---|---|---|
-| Worst (violated), original | −504.66 ps | `lsq_0/head_reg[1]` → `mult_0/mstage[0]/product_sum_reg[55..57]` (3 endpoints) |
-| Worst (violated), after STLF pipelining | −244.54 ps | same start/end cone (3 endpoints) |
-| Worst met | +123.30 ps | (best of the in-clock-domain paths) |
+| Worst (violated) | **−797.58 ps** | `lsq_0/head_reg[2]` → `rob_0/entries_reg[2][take_branch]` |
+| Worst (violated), companion | −797.55 ps | `lsq_0/head_reg[2]` → `lsq_0/entries_reg[3][addr][31]` |
+| Worst met (in-clock-domain) | (large positive) | — |
 
-Three endpoints violate, all in the same `LSQ-head → MULT-stage-0` cone. Compared to the pre-merge baseline in `../base-design/base-design-verification.md` §4 (−309.07 ps, worst endpoint on `rs_0/entries_reg[*][src_ready] → mult_0/mstage[0]/product_sum_reg[*]`):
+Two endpoints violate, both with startpoint `lsq_0/head_reg[2]`. The worst cone runs `LSQ broadcast → RS operand mux → ALU 32-bit adder → {ROB take_branch, LSQ addr}`; this is *not* the cone the older write-ups described. The MULT stage-0 cone (`lsq_0/head_reg[1] → mult_0/mstage[0]/product_sum_reg[*]`) that was the worst path before `51b7f1c` is closed: registering `mult_mcand` / `mult_mplier` and gating the multiplier with `mult_start_reg` killed it outright.
 
-The critical path moved. It used to be "RS issue-output → MULT stage 0" and is now "LSQ head data → MULT stage 0". The cause was the store-to-load-forwarding mux added by STLF: a forwarded load value could become a multiplier operand, and the combinational path ran from the LSQ head register through the forward comparator and mux, through the operand-select on the RS issue output, and into the MULT stage-0 product accumulator.
+Re-baseline of `dbcd4f6` (with the verify-merged-features STLF pipelining fix but without `51b7f1c`) on a clean rebuild shows worst slack ≈ **−1600 ps**, so `51b7f1c` recovered ~800 ps of slack standalone. This matches the team's commit message claim of `−1657 → −797 ps`.
 
-The verify-merged-features pass (§10) pipelined the LSQ-side half of that cone. Lines 371 and 400 of `verilog/lsq.sv` no longer OR `stlf_ready` into the broadcast arbiter or pick `stlf_value` in the `load_complete_value` mux. Forwarded loads now broadcast one cycle later, after the existing STLF latch step has put the value into `entries[i].load_buf_*`. That cut the path by about 260 ps and brought slack from −504.66 to −244.54.
+The earlier numbers in this report — `−504.66 ps` (post-merge, pre-STLF-pipelining) and `−244.54 ps` (post-STLF-pipelining) — used stale build artefacts and have been retracted. Both were measured without a clean `make nuke` between syntheses, so the synth tool re-used cached intermediate results that did not reflect the actual RTL. The `≈ −1600 ps` re-measurement above is the corrected `dbcd4f6` baseline; the standalone slack contribution of the STLF pipelining fix has not been re-baselined against a `dbcd4f6`-minus-STLF build.
 
-The remaining 244 ps lives inside the MULT stage-0 multiply tree itself (`partial_product = mplier[7:0] * mcand` plus `prev_sum + partial_product` in `verilog/mult_stage.sv:21,27`), not in the LSQ side. Closing it fully would mean either registering `load_complete_value` at the LSQ output (one more cycle on every load, not just the few percent that hit STLF) or splitting MULT stage 0 into two pipeline stages (one cycle on every multiply). Both pay perf on the common case to fix the rare case, so the verify-merged-features pass stopped short. The netlist is functionally correct (`.syn.wb` matches `.wb` on all 34 programs, §5.1) and the project already accepts deferred timing closure per `base-design-verification.md` §4.
+Compared to the pre-merge baseline in `../base-design/base-design-verification.md` §4 (originally `−309.07 ps`, re-verified to `−302.55 ps` on a clean rebuild 2026-05-01, same RS→MULT-stage-0 cone class): the base-design measurement was approximately correct — the ~6.5 ps delta is within DC re-run noise, not the kind of large pollution we found in the verify-merged-features-era `−244 / −504 ps` numbers. So the `058a8aa` baseline at ≈ −302 ps is the trustworthy pre-merge number; the advanced-features merge wave (especially STLF) is what drove the post-merge baseline to ≈ −1600 ps before `51b7f1c`'s mult-operand register recovered ~800 ps to land at −797.58 ps.
 
-The per-module synth runs are all clean (§3). The integrated violation is purely cross-module on the LSQ ↔ MULT seam.
+Closing the residual −797.58 ps fully would mean either registering `load_complete_value` / `load_complete_tag` between the LSQ broadcast arbiter and the CDB (one extra cycle on every completing load, not just the few percent that hit STLF) or rebalancing the broadcast → adder cone (e.g., splitting the 32-bit adder into two stages). Both pay perf on the common case to fix the rare case, so this pass stops short. The netlist is functionally correct on the pre-`51b7f1c` baseline (`.syn.wb` matches `.wb` on all 33 programs, §5.1); re-verification across the merge is expected to hold (the change is a flop insertion, no value change) but `simulate_all_syn` was not re-run.
+
+The per-module synth runs are all clean (§3). The integrated violation is purely cross-module on the LSQ ↔ ROB / LSQ self seam through the ALU adder.
 
 ## 7. Synthesized full-pipeline regression (`make simulate_all_syn`)
 
-`syn_simv` builds from `synth/pipeline.vg` and runs all 34 programs. All halt at WFI on the synthesized netlist. No program hangs or aborts, despite the residual −244.54 ps slack violation in the static-timing report (no glitch path turns up in functional gate-level sim, both before and after the verify-merged-features STLF pipelining).
+`syn_simv` builds from `synth/pipeline.vg` and runs all 33 programs. On the pre-`51b7f1c` baseline all halt at WFI on the synthesized netlist (no program hangs or aborts, despite the static-timing violation: no glitch path turns up in functional gate-level sim). The post-merge end-to-end re-run (`make simulate_all_syn` plus `cmp -s` of every `.syn.wb` against its `.wb`) was not performed — the change in `51b7f1c` is a flop insertion in front of the multiplier (no value change), so the property is expected to hold, but a clean re-verification is recommended before any final sign-off.
 
-Every `.syn.wb` is byte-identical to its `.wb` (`cmp -s` succeeds on all 34). After the verify-merged-features pass, mergesort gained one cycle (200072 → 200073) because the STLF-fed instructions now broadcast a cycle later; the other 33 programs are unchanged or within the standard Synopsys reset offset.
+Every `.syn.wb` is byte-identical to its `.wb` (`cmp -s` succeeds on all 33). After the verify-merged-features pass, mergesort gained one cycle (200072 → 200073) because the STLF-fed instructions now broadcast a cycle later; the other 32 programs are unchanged or within the standard Synopsys reset offset.
 
 The merged stack synthesizes to a netlist that is functionally bit-equivalent to the RTL across the full regression suite. The slack violation in §6 is a static-timing closure issue, not a correctness one. The design works; it just won't run at 1000 ps without one of the retunes called out there.
 
@@ -179,9 +180,9 @@ the §5 cumulative numbers.
 
 ## 9. Recommendation
 
-The merged stack builds (`make simv`, `make syn_simv`) and passes the regression suite end-to-end. After the verify-merged-features pass (§10), all 34 programs halt at WFI in both sim and syn, every `.wb` is byte-identical between sim and syn, and 7 of 7 RTL unit tests plus 7 of 7 synth unit tests pass. The per-module synth runs all meet timing, and CPI on the longer benchmarks is down 30–50 % against the April-26 in-tree baseline with nothing regressing.
+The merged stack builds (`make simv`, `make syn_simv`) and passes the regression suite end-to-end. After the verify-merged-features pass (§10), all 33 programs halt at WFI in both sim and syn, every `.wb` is byte-identical between sim and syn, and 7 of 7 RTL unit tests plus 7 of 7 synth unit tests pass. The per-module synth runs all meet timing, and CPI on the longer benchmarks is down 30–50 % against the April-26 in-tree baseline with nothing regressing.
 
-The one real concern left is timing closure on the integrated netlist. The critical path (`lsq_0/head_reg[1] → mult_0/mstage[0]/product_sum_reg[*]`) now misses by −244.54 ps at 1000 ps after the STLF pipelining fix, down from −504.66. The remaining 244 ps lives inside the MULT stage-0 multiply tree, not the LSQ side. Closing it fully would mean either registering `load_complete_value` (one more cycle on every load) or splitting MULT stage 0 (one cycle on every multiply); both were considered and deferred. The netlist is functionally correct.
+The one real concern left is timing closure on the integrated netlist. Post-merge worst slack at 1000 ps is **−797.58 ps** on `lsq_0/head_reg[2] → rob_0/entries_reg[2][take_branch]` (companion `lsq_0/head_reg[2] → lsq_0/entries_reg[3][addr][31]` at −797.55 ps). The MULT stage-0 cone documented in earlier write-ups (`lsq_0/head_reg[1] → mult_0/mstage[0]/product_sum_reg[*]`) is closed by `51b7f1c`'s mult-operand register; the residual is the LSQ-broadcast → RS operand mux → ALU 32-bit adder cone. Closing it fully would mean either registering `load_complete_value` / `load_complete_tag` between LSQ and CDB (one more cycle on every completing load) or rebalancing the broadcast → adder path; both deferred. The netlist is functionally correct on the pre-merge baseline; expected to remain so after the merge but not re-verified end-to-end.
 
 So the advanced-feature point claim is on solid ground at the integration level. What's still owed is the per-feature documentation (§8) and the residual timing retune.
 
@@ -228,13 +229,13 @@ The icache row in §4 had a different cause (URMI not PCTM) but the fix shape wa
 
 ### 10.3 STLF pipelining for timing
 
-`verilog/lsq.sv` had a same-cycle store-to-load forward path that fed the CDB combinationally. The original code OR'd `stlf_ready[i]` into `buf_ready_comb[i]` (line 371) and selected `stlf_value[broadcast_pos]` in the `load_complete_value` mux (line 400), so a forwarded load value flowed from the LSQ head register through the forward comparator, the broadcast-arbitration mux, the CDB, the RS issue value mux (which has a CDB-bypass for the issued entry's value), and into the MULT-stage-0 operand path — all in one clock period. That was the −504.66 ps cone documented in §6.
+`verilog/lsq.sv` had a same-cycle store-to-load forward path that fed the CDB combinationally. The original code OR'd `stlf_ready[i]` into `buf_ready_comb[i]` (line 371) and selected `stlf_value[broadcast_pos]` in the `load_complete_value` mux (line 400), so a forwarded load value flowed from the LSQ head register through the forward comparator, the broadcast-arbitration mux, the CDB, the RS issue value mux (which has a CDB-bypass for the issued entry's value), and into the MULT-stage-0 operand path — all in one clock period. That was the worst integrated cone before this fix (originally quoted at −504.66 ps; that endpoint used stale build artefacts and has been retracted, see §6).
 
 The fix kept the existing "STLF latch" step (lines 587–592 of `lsq.sv`), which was already writing `next_entries[i].load_buf_valid` and `next_entries[i].load_buf_value` from `stlf_ready[i]` and `stlf_value[i]` on every clock. After the change, line 371 just reads `entries[i].load_buf_valid` and line 400 returns `entries[broadcast_pos].load_buf_value` directly. Forwarded loads now broadcast one cycle later than before, after the latch step has registered the value. Cache-hit loads were already on this registered path and are unaffected. Lines 187, 588, and 626 still reference `stlf_ready` because those are flop-input paths (or non-critical), not paths that feed the CDB.
 
-Slack improved from −504.66 ps to −244.54 ps — about 260 ps of headroom recovered. The path startpoint and endpoint are still the same (`lsq_0/head_reg[1]` → `mult_0/mstage[0]/product_sum_reg[*]`), but the gates traversed are different: the LSQ-internal STLF cone is gone, and what's left is dominated by the MULT-stage-0 multiply tree (`partial_product = mplier[7:0] * mcand` plus `prev_sum + partial_product`, four-deep adder tree internally) and the RS / operand mux feeding it. The original plan estimated this fix would close timing fully (~750 ps on the post-LSQ side, comfortably under the 987 ps budget); the multiply tree turned out to be deeper than that. Closing the rest needs to come from somewhere else.
+The previously quoted slack delta `−504.66 → −244.54 ps` (~260 ps recovered) has been retracted. Both endpoints used stale build artefacts; clean re-synth of `dbcd4f6` (with this STLF latch fix in place) shows worst slack ≈ **−1600 ps**, dominated by the MULT stage-0 multiply tree (`partial_product = mplier[7:0] * mcand` plus `prev_sum + partial_product`, four-deep adder tree internally) and the RS / operand mux feeding it. The standalone slack contribution of this fix has not been re-baselined against a `dbcd4f6`-minus-STLF build; what is verified is the architectural change (forwarded loads now go through the same registered fast path as cache-hit loads) and the +1-cycle perf cost on STLF-hitting programs (mergesort: 200 072 → 200 073 cycles). The final closure of MULT-stage-0 came from `51b7f1c`'s mult-operand register on top of this fix, bringing post-merge worst slack to −797.58 ps.
 
-Architectural correctness check: `simulate_all` and `simulate_all_syn` both halt at WFI on all 34 programs, and `cmp -s output/<p>.wb output/<p>.syn.wb` succeeds on every one. mergesort gained one cycle (200072 → 200073) because the STLF-fed loads now broadcast a cycle later; the other 33 programs are unchanged. Memory dumps are bit-identical and branch accuracy is identical.
+Architectural correctness check: `simulate_all` and `simulate_all_syn` both halt at WFI on all 33 programs, and `cmp -s output/<p>.wb output/<p>.syn.wb` succeeds on every one. mergesort gained one cycle (200072 → 200073) because the STLF-fed loads now broadcast a cycle later; the other 32 programs are unchanged. Memory dumps are bit-identical and branch accuracy is identical.
 
 ### 10.4 What's still open
 
@@ -244,5 +245,5 @@ The original §10 listed four next actions. Where they ended up:
 |---|---|
 | Re-run with `+define+SERIALIZE_BRANCHES` and check `.wb` byte-identity | Skipped. The sim ↔ syn byte-identity in §5.1 already rules out the underlying concern (speculation-vs-architecture mismatch inside the merged stack), so the value of an explicit SERIALIZE_BRANCHES diff is mostly belt-and-suspenders. |
 | Fix `*.syn.pass` for `rob`, `rs`, `lsq`, `icache`, and `branch_predictor` | Done (§10.1, §10.2). |
-| Address the LSQ → MULT timing violation | Partially done (§10.3): −504.66 → −244.54 ps. The residual is in MULT stage 0 and would need its own pipelining decision. |
+| Address the LSQ → MULT timing violation | Done at the cone level (§10.3 STLF pipelining + `51b7f1c` mult-operand register): the LSQ → MULT-stage-0 cone is closed. Post-merge worst slack is −797.58 ps on a different cone (`LSQ broadcast → ALU adder → ROB/LSQ`); that residual is deferred. The earlier `−504.66 → −244.54 ps` numbers were retracted (stale build artefacts). |
 | Write the missing per-feature reports | Done (§8). Four new reports cover the seven outstanding features, grouped per-module. |

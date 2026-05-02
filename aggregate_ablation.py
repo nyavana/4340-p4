@@ -14,7 +14,7 @@ PROGRAMS = [
     "copy", "copy_long", "dft", "evens", "evens_long", "fc_forward",
     "fib", "fib_long", "fib_rec", "graph", "haha", "halt",
     "insertion", "insertionsort", "matrix_mult_rec", "mergesort",
-    "mult", "mult_no_lsq", "mytest", "no_hazard", "omegalul",
+    "mult", "mult_no_lsq", "no_hazard", "omegalul",
     "outer_product", "parallel", "priority_queue", "quicksort",
     "sampler", "saxpy", "sort_search"
 ]

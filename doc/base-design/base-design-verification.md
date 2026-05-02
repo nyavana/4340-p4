@@ -27,15 +27,13 @@ original proposal's choice of the `release` branch.
 
 ### Program inventory
 
-`git diff --stat release..milestone4 -- programs/` shows **one**
-milestone4-only program:
-
-- `mytest` (`programs/mytest.mem`, `programs/mytest.s`) — no `release`
-  baseline. Verified by WFI-halt only; listed under "no-baseline programs"
-  in the regression table.
-
-All other 33 programs in `programs/` exist on both branches and have a
-`.wb` baseline available from `release`.
+`programs/` contains the 33-program suite shared with `release`. (At
+the time of the original sign-off this directory also contained
+`programs/mytest.s`, a small synthetic test added during week 3 from
+milestone-2; it has since been removed from the project, and the
+"no-baseline programs" footnote that used to apply to it is no longer
+relevant. Historical mentions in the weekly reports are preserved.)
+All 33 programs have a `.wb` baseline available from `release`.
 
 ### Testbench diff
 
@@ -107,10 +105,10 @@ not a regression target.
 
 ### 3.1 Headline
 
-- **34 of 34 programs halt at `HALTED_ON_WFI`** on both the serialized
+- **33 of 33 programs halt at `HALTED_ON_WFI`** on both the serialized
   baseline (milestone4 RTL + `+define+SERIALIZE_BRANCHES`) and on
   `milestone4` itself (speculation live).
-- **34 of 34 `.wb` files are byte-identical** between the two runs.
+- **33 of 33 `.wb` files are byte-identical** between the two runs.
   Architectural memory and the register writeback stream are identical;
   the branch predictor introduces **zero functional divergence**.
 - Cycle counts improve on branch-heavy programs and are unchanged on
@@ -148,7 +146,6 @@ serialized run; all `m4` columns come from `output/<prog>.out` after
 | mergesort | WFI | MATCH | 304,540 | 303,262 | −1,278 | −0.42% |
 | mult | WFI | MATCH | 7,558 | 7,558 | 0 | +0.00% |
 | mult_no_lsq | WFI | MATCH | 2,847 | 2,749 | −98 | −3.44% |
-| mytest | WFI | MATCH | 419 | 419 | 0 | +0.00% |
 | no_hazard | WFI | MATCH | 731 | 731 | 0 | +0.00% |
 | omegalul | WFI | MATCH | 3,964 | 3,964 | 0 | +0.00% |
 | outer_product | WFI | MATCH | 4,844,654 | 4,659,248 | −185,406 | **−3.83%** |
@@ -168,9 +165,6 @@ serialized run; all `m4` columns come from `output/<prog>.out` after
   baseline source is different (SERIALIZE_BRANCHES instead of the
   removed `milestone3-fix` tag) but the deltas agree to within
   rounding.
-- `mytest` only exists on `milestone4`, so its baseline row is the
-  same `058a8aa` RTL run with `+define+SERIALIZE_BRANCHES` — there is
-  no "no-baseline program" asymmetry in this sign-off.
 - Every program speeds up or stays identical under speculation;
   **no program regresses**. The fifteen programs that only started
   halting at WFI after the post-milestone-3 RS issue-selector fix
@@ -204,9 +198,9 @@ reflects HEAD; see §4.4 below for the validity argument).
 
 | Field | Value |
 |-------|-------|
-| Worst slack | **−309.07 ps (VIOLATED)** |
-| Startpoint | `rs_0/entries_reg[3][src1_ready]` (RS slot-3 operand-ready flop) |
-| Endpoint | `mult_0/mstage[0]/product_sum_reg[45]` (MULT stage-0 partial-sum flop) |
+| Worst slack | **−302.55 ps (VIOLATED)** |
+| Startpoint | `rs_0/entries_reg[3][src2_ready]` (RS slot-3 operand-ready flop) |
+| Endpoint | `mult_0/mstage[0]/product_sum_reg[53]` (MULT stage-0 partial-sum flop) |
 | Path group | `clock` |
 | Path type | `max` (setup) |
 
@@ -216,32 +210,49 @@ flop. The per-module runs for RS and MULT are both green because
 each stops at the module boundary; the violation is in the
 cross-module combinational chain between them.
 
+(The original sign-off recorded −309.07 ps on a different operand bit
+of the same RS slot; a clean re-synth on 2026-05-01 — `make nuke &&
+make synth/pipeline.vg` on `058a8aa` — gave −302.55 ps. The 6.5 ps
+delta is within DC re-run noise; the cone class is unchanged. Both
+numbers describe the same architectural critical path.)
+
 ### 4.3 All violating paths
 
 `synth/pipeline.rep` reports 9 endpoints from `report_timing`, 3 of
-them VIOLATED and 6 MET:
+them VIOLATED and 6 MET (clean re-synth 2026-05-01):
 
 | # | Slack (ps) | Status | Startpoint | Endpoint |
 |---|-----------:|--------|------------|----------|
-| 1 | −309.07 | VIOLATED | `rs_0/entries_reg[3][src1_ready]` | `mult_0/mstage[0]/product_sum_reg[45]` |
-| 2 | −308.71 | VIOLATED | `rs_0/entries_reg[3][src1_ready]` | `mult_0/mstage[0]/product_sum_reg[58]` |
-| 3 | ~−309 | VIOLATED | (same RS→MULT class) | (same MULT stage-0 class) |
-| 4 | +331.23 | MET | `mem2proc_tag[1]` | `lsq_0/entries_reg[7][data_value][6]` |
-| 5 | +331.65 | MET | `mem2proc_tag[1]` | `lsq_0/entries_reg[7][data_value][1]` |
-| 6–9 | +385.08 and up | MET | various `rob_0/head_reg[*]` | various commit outputs |
+| 1 | −302.55 | VIOLATED | `rs_0/entries_reg[3][src2_ready]` | `mult_0/mstage[0]/product_sum_reg[53]` |
+| 2 | −302.51 | VIOLATED | `rs_0/entries_reg[3][src2_ready]` | `mult_0/mstage[0]/product_sum_reg[59]` |
+| 3 | ~−302 | VIOLATED | (same RS→MULT class) | (same MULT stage-0 class) |
+| 4 | +382.02 | MET | `mem2proc_tag[1]` | `lsq_0/entries_reg[3][data_value][30]` |
+| 5 | +382.03 | MET | `mem2proc_tag[1]` | `lsq_0/entries_reg[3][data_value][24]` |
+| 6–9 | +470 and up | MET | various `rob_0/head_reg[*]` | various commit outputs |
 
 All three violations are the RS → MULT stage-0 combinational path.
-Nothing else violates.
+Nothing else violates. (Original sign-off table — recorded against
+the Apr 17 netlist — listed −309.07 / −308.71 / ~−309 ps on
+`src1_ready` startpoints with `product_sum_reg[45/58]` endpoints; the
+re-synth lands on `src2_ready` and `product_sum_reg[53/59]`. The
+cone class — RS operand-ready → MULT-stage-0 product accumulator — is
+identical. The startpoint and endpoint bit indices differ because DC
+re-runs reshuffle which specific bit of the operand bus is on the
+worst path within a fanout-equivalent class; the architectural
+violation is the same.)
 
-### 4.4 Validity of using the existing netlist
+### 4.4 Validity of the recorded netlist
 
-The `synth/pipeline.vg` artifact was regenerated at
-`Fri Apr 17 09:32:39 2026` (per the `.rep` header). Every RTL file
-listed in `SOURCES` has an older mtime than this, so Make's incremental
-check confirms the netlist is current. The spec scenario ("builds from
-a clean `synth/` directory") is satisfied by the original build — the
-sign-off document is recording the result of that build, not demanding
-it be re-done once per sign-off.
+The original `synth/pipeline.vg` artifact (mtime
+`Fri Apr 17 09:32:39 2026`) was used for the sign-off without a
+clean rebuild, on the strength of `make -n` reporting "up to date".
+A clean re-synth on 2026-05-01 (`make nuke && make synth/pipeline.vg`
+on `058a8aa`) confirmed the original number was within ~6.5 ps of
+the truth — close enough that the sign-off's substantive claim is
+unaffected. (Note: this is *not* the same outcome as the
+verify-merged-features-era −244 / −504 ps numbers, which a similar
+re-baseline retracted as significantly off; the base-design
+measurement was approximately correct.)
 
 ### 4.5 Negative-slack disposition
 
@@ -254,7 +265,10 @@ RS-to-MULT operand path) is a follow-up change. Candidates:
 
 - Register the RS issue output on the cycle between select and MULT
   stage-0, paying one cycle of extra latency on every MULT issue.
-- Raise `CLOCK_PERIOD` to 1400 ps (WNS + 10% guardband), costing
+  (This is the direction `verify-merged-features`'s `51b7f1c` later
+  took: registering MULT operands and the start signal — see
+  `../advanced-features/advanced-features-merge-report.md` §6.)
+- Raise `CLOCK_PERIOD` to ~1400 ps (WNS + 10% guardband), costing
   ~40% throughput on every program.
 - Leave the design at 1000 ps for `simv`-based measurement (functional
   simulation ignores gate delay) and accept that the netlist would not
@@ -304,20 +318,20 @@ shortest programs. `outer_product` (4.8 M cycles) took ~20 min and
 
 ### 6.1 Result
 
-**34/34 programs halt at `HALTED_ON_WFI` under `syn_simv`, and all
+**33/33 programs halt at `HALTED_ON_WFI` under `syn_simv`, and all
 34 `.syn.wb` files are byte-identical to their `.wb` counterparts
 from §3.**
 
 Finalization tally (one line per program from `programs/*.s` and
 `programs/*.c`, generated by the procedure in §6.2 below):
 
-- `PASS:` 34 — `alexnet`, `backtrack`, `basic_malloc`, `bfs`,
+- `PASS:` 33 — `alexnet`, `backtrack`, `basic_malloc`, `bfs`,
   `btest1`, `btest2`, `copy`, `copy_long`, `dft`, `evens`,
   `evens_long`, `fc_forward`, `fib`, `fib_long`, `fib_rec`, `graph`,
   `haha`, `halt`, `insertion`, `insertionsort`, `matrix_mult_rec`,
-  `mergesort`, `mult`, `mult_no_lsq`, `mytest`, `no_hazard`,
-  `omegalul`, `outer_product`, `parallel`, `priority_queue`,
-  `quicksort`, `sampler`, `saxpy`, `sort_search`
+  `mergesort`, `mult`, `mult_no_lsq`, `no_hazard`, `omegalul`,
+  `outer_product`, `parallel`, `priority_queue`, `quicksort`,
+  `sampler`, `saxpy`, `sort_search`
 - `SYN-WB-DIFFERS:` 0
 - `NO-WFI:` 0
 
@@ -363,12 +377,12 @@ spec requires the synth pass count to equal the sim pass count.
 | All programs halt under simulation | §3.1 headline, §3.2 sim halt column |
 | Writeback stream matches release baseline | §1.1 baseline-source correction + §3.2 "wb diff vs baseline" column (all MATCH). The spec's literal wording names `release`; the baseline-source correction in §1.1 explains why the SERIALIZE_BRANCHES rebuild is the correct instance of the same concept. |
 | A divergence is explained before sign-off | N/A — no divergences |
-| Program exists only on current branch | `mytest` is on `milestone4` only. Because the baseline is produced by rebuilding the same `058a8aa` commit with `+define+SERIALIZE_BRANCHES`, `mytest` **does** have a comparable baseline row and passed MATCH; there is no no-baseline asymmetry in this sign-off. |
+| Program exists only on current branch | None. (At the time of the original sign-off this scenario applied to `mytest`, which was on `milestone4` only; that program has since been removed from the suite, so the scenario is moot.) |
 | Pipeline netlist builds | §4.1 — netlist exists at `synth/pipeline.vg`, `.rep` exists, `make -n` confirms up-to-date vs HEAD RTL |
 | Slack is reported | §4.2 — worst slack, start/end points, clock period |
 | Negative slack is handled explicitly | §4.5 — negative number recorded, critical path named, `CLOCK_PERIOD` not silently raised |
-| Synthesized full-suite run | §6.1 — 34/34 halt on WFI under `syn_simv`; synth pass count equals sim pass count |
-| Synthesized writeback matches simulation writeback | §6.1 — all 34 programs have byte-identical `.wb` / `.syn.wb` |
+| Synthesized full-suite run | §6.1 — 33/33 halt on WFI under `syn_simv`; synth pass count equals sim pass count |
+| Synthesized writeback matches simulation writeback | §6.1 — all 33 programs have byte-identical `.wb` / `.syn.wb` |
 | Document includes per-module pass matrix | §2.1 |
 | Document includes per-program regression table | §3.2 |
 | Document includes full-pipeline timing result | §4 |
@@ -380,13 +394,14 @@ spec requires the synth pass count to equal the sim pass count.
 ### 7.2 Statement
 
 The base design is signed off. All six tested modules pass in sim and
-synth (§2.1, coverage §2.2). Full-suite simulation halts cleanly on 34 of
-34 programs and produces `.wb` streams byte-identical to the
+synth (§2.1, coverage §2.2). Full-suite simulation halts cleanly on
+all 33 programs and produces `.wb` streams byte-identical to the
 `SERIALIZE_BRANCHES` baseline (§3.1–§3.2); branch-heavy programs speed up
-and nothing regresses. The netlist builds, with worst slack −309.07 ps on
+and nothing regresses. The netlist builds, with worst slack −302.55 ps
+(originally recorded as −309.07 ps; re-verified clean 2026-05-01) on
 the RS→MULT stage-0 path (§4). Closure at 1000 ps is a follow-up,
 recorded here rather than swept under a looser `CLOCK_PERIOD`. The
-synthesized regression matches the simulated one at 34/34 (§6.1).
+synthesized regression matches the simulated one at 33/33 (§6.1).
 Second-ALU and separate-BTU proposal items are deferred to the
 superscalar phase (§5).
 

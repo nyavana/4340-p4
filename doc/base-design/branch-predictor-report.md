@@ -10,7 +10,7 @@
 > hunt.
 
 Status as of 2026-04-17: the predictor is live, the regression is
-green at 34/34, and bring-up turned up four integration bugs that
+green at 33/33, and bring-up turned up four integration bugs that
 are all fixed in this branch (one in `rs.sv` for the JAL/JALR NPC
 broadcast, two in `lsq.sv` for flush / cache-done races, and one
 in `icache.sv` for a PC change mid-fetch).
@@ -96,7 +96,7 @@ one had to go in before most of the regression would halt.
 
 ## Current regression status
 
-All 34 programs in `programs/` halt cleanly at `HALTED_ON_WFI`.
+All 33 programs in `programs/` halt cleanly at `HALTED_ON_WFI`.
 `quicksort` went from hung at the 50 M-cycle cap to halting at
 916,135 cycles (−4.4% vs the 958,030 baseline). `sort_search` was
 the last holdout; it halts at 830,929 cycles / 181,994 instrs /
@@ -129,7 +129,6 @@ SERIALIZE_BRANCHES baseline.
 | mergesort          |         303,270 |    303,262 | −8               |
 | mult               |           7,558 |      7,558 | 0                |
 | mult_no_lsq        |           2,833 |      2,749 | −84 (−3.0%)      |
-| mytest             |             419 |        419 | 0                |
 | no_hazard          |             731 |        731 | 0                |
 | omegalul           |           3,964 |      3,964 | 0                |
 | outer_product      |       4,848,166 |  4,659,248 | −189 k (−3.9%)   |
@@ -325,7 +324,7 @@ memory semantics for every subsequent load that hit that line.
 
 `test/lsq_test.sv` feeds `dcache_busy = 1'b0` into the stub
 (always-ready 1-cycle cache model), preserving the existing tests.
-All LSQ unit tests pass; the full regression sits at 34/34.
+All LSQ unit tests pass; the full regression sits at 33/33.
 
 ### How the earlier phase-11 bugs fit in
 

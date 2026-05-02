@@ -97,12 +97,11 @@ change and applied that one piece on top of `milestone3` head.
 
 ## Test results after the fix
 
-All 34 programs in `programs/` reach `HALTED_ON_WFI`. Up from 18.
+All 33 programs in `programs/` reach `HALTED_ON_WFI`. Up from 18.
 
 The 18 that were already passing produce identical cycle counts to
 the cycle, so the fix does not regress anything. The 15 that were
-hanging or timing out all halt cleanly. `mytest`, which is not in the
-milestone3 results table at all, also halts.
+hanging or timing out all halt cleanly.
 
 Before / after on the previously-failing programs:
 

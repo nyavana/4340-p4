@@ -6,7 +6,7 @@ Date: 2026-05-01. Branch `verify-merged-features` at `390bfed`.
 
 ## 1. Methodology
 
-To quantify the marginal cycle-count contribution of each advanced feature, we ran seven builds of the full 34-program suite:
+To quantify the marginal cycle-count contribution of each advanced feature, we ran seven builds of the full 33-program suite (originally 34, but `programs/mytest.s` was a small synthetic test added during week 3 that wasn't part of the canonical suite — it has been removed; geomeans below are recomputed without it from the original sweep data):
 
 | Tag | EXTRA_DEFINES passed to VCS |
 |---|---|
@@ -64,7 +64,6 @@ Each ablation measures the **marginal cost** of removing one feature from the ot
 | mergesort | 200,073 | 21.100 | 200,073 | +0.00% | 200,339 | +0.13% | 200,336 | +0.13% | 200,370 | +0.15% | 292,494 | +46.19% | 294,331 | +47.11% |
 | mult | 7,430 | 22.791 | 7,430 | +0.00% | 7,430 | +0.00% | 7,430 | +0.00% | 7,430 | +0.00% | 7,561 | +1.76% | 7,565 | +1.82% |
 | mult_no_lsq | 2,251 | 7.954 | 2,301 | +2.22% | 2,229 | -0.98% | 2,251 | +0.00% | 2,251 | +0.00% | 2,885 | +28.17% | 2,920 | +29.72% |
-| mytest | 213 | 26.625 | 213 | +0.00% | 213 | +0.00% | 213 | +0.00% | 213 | +0.00% | 416 | +95.31% | 416 | +95.31% |
 | no_hazard | 422 | 30.143 | 422 | +0.00% | 422 | +0.00% | 422 | +0.00% | 422 | +0.00% | 725 | +71.80% | 725 | +71.80% |
 | omegalul | 2,220 | 30.000 | 2,220 | +0.00% | 2,220 | +0.00% | 2,222 | +0.09% | 2,223 | +0.14% | 3,942 | +77.57% | 3,944 | +77.66% |
 | outer_product | 3,166,519 | 4.244 | 3,200,440 | +1.07% | 3,166,010 | -0.02% | 3,169,138 | +0.08% | 3,171,599 | +0.16% | 3,966,677 | +25.27% | 3,983,006 | +25.79% |
@@ -74,7 +73,7 @@ Each ablation measures the **marginal cost** of removing one feature from the ot
 | sampler | 3,378 | 30.709 | 3,378 | +0.00% | 3,378 | +0.00% | 3,378 | +0.00% | 3,378 | +0.00% | 6,220 | +84.13% | 6,220 | +84.13% |
 | saxpy | 4,230 | 22.620 | 4,230 | +0.00% | 4,213 | -0.40% | 4,230 | +0.00% | 4,230 | +0.00% | 4,533 | +7.16% | 4,515 | +6.74% |
 | sort_search | 600,637 | 3.300 | 600,637 | +0.00% | 598,634 | -0.33% | 600,765 | +0.02% | 606,833 | +1.03% | 710,157 | +18.23% | 718,427 | +19.61% |
-| **geomean Δ%** | | | | **+0.10%** | | **+0.19%** | | **+0.10%** | | **+0.20%** | | **+38.57%** | | **+39.28%** |
+| **geomean Δ%** | | | | **+0.10%** | | **+0.19%** | | **+0.10%** | | **+0.20%** | | **+37.14%** | | **+37.86%** |
 
 ---
 
@@ -86,26 +85,26 @@ Each ablation measures the **marginal cost** of removing one feature from the ot
 | gshare (`no_gshare`) | +0.19% | fib_rec | +9.65% |
 | RAS (`no_ras`) | +0.10% | basic_malloc | +0.52% |
 | STLF (`no_stlf`) | +0.20% | insertionsort | +1.64% |
-| prefetch (`no_prefetch`) | +38.57% | mytest | +95.31% |
-| all 5 disabled | +39.28% | mytest | +95.31% |
+| prefetch (`no_prefetch`) | +37.14% | alexnet | +94.22% |
+| all 5 disabled | +37.86% | alexnet | +94.21% |
 
-**Prefetch dominates.** Disabling the stream-buffer prefetcher alone accounts for essentially the entire gap between the advanced-feature configuration and the no-advanced baseline: the `no_prefetch` geomean (+38.57%) is within 0.71 pp of the full `no_advanced` (+39.28%). This is consistent with the processor's memory-bound profile: with a single instruction issue slot and a 100 ns memory latency, the icache hit rate is on the critical path for almost every program in the suite. The stream buffer converts most sequential fetch sequences from cache misses into hit-latency accesses.
+**Prefetch dominates.** Disabling the stream-buffer prefetcher alone accounts for essentially the entire gap between the advanced-feature configuration and the no-advanced baseline: the `no_prefetch` geomean (+37.14%) is within 0.72 pp of the full `no_advanced` (+37.86%). This is consistent with the processor's memory-bound profile: with a single instruction issue slot and a 100 ns memory latency, the icache hit rate is on the critical path for almost every program in the suite. The stream buffer converts most sequential fetch sequences from cache misses into hit-latency accesses.
 
-**ETB, gshare, RAS, and STLF are individually small but real.** Their geomean regressions are 0.10–0.20% each when removed from an otherwise fully-advanced design. The four features together contribute roughly 0.71 pp of the 39.28% total gap (i.e., the `no_advanced` geomean exceeds `no_prefetch` by only 0.71 pp). This is not surprising: the second CDB slot required for ETB to have its maximum impact is not present (the design is 1-wide CDB), so ETB can only help when the single CDB cycle following MULT early-done is idle for a non-MULT op. Similarly, gshare and RAS improve branch accuracy over bimodal+BTB (as documented in `branch-accuracy-cpi-diff.md`), but since most mispredict penalties are a handful of cycles and this is an OoO design that can hide some of them, the CPI impact is modest. STLF helps programs with tight store-load RAW patterns (insertionsort: +1.64% regression when disabled) but the overall workload mix dilutes it.
+**ETB, gshare, RAS, and STLF are individually small but real.** Their geomean regressions are 0.10–0.20% each when removed from an otherwise fully-advanced design. The four features together contribute roughly 0.72 pp of the 37.86% total gap (i.e., the `no_advanced` geomean exceeds `no_prefetch` by only 0.72 pp). This is not surprising: the second CDB slot required for ETB to have its maximum impact is not present (the design is 1-wide CDB), so ETB can only help when the single CDB cycle following MULT early-done is idle for a non-MULT op. Similarly, gshare and RAS improve branch accuracy over bimodal+BTB (as documented in `branch-accuracy-cpi-diff.md`), but since most mispredict penalties are a handful of cycles and this is an OoO design that can hide some of them, the CPI impact is modest. STLF helps programs with tight store-load RAW patterns (insertionsort: +1.64% regression when disabled) but the overall workload mix dilutes it.
 
 **Per-program outliers:**
 
 - `fib_rec` regresses 9.65% under `no_gshare`. This program's tight recursion structure produces a highly predictable call/return pattern that gshare exploits by XOR-ing a short history of taken/not-taken outcomes with the PC; without gshare the BHT aliasing on the recursive call site degrades accuracy significantly.
 - `outer_product` regresses 1.07% under `no_etb`. This dense inner-loop multiply-and-accumulate workload generates back-to-back MULT operations; ETB's early wakeup lets waiting RS entries issue one cycle sooner on each MULT completion.
 - `insertionsort` regresses 1.64% under `no_stlf`. The insertion inner loop reads the element it just wrote; STLF forwards that value from the LSQ without going to the dcache.
-- Programs with near-zero branch counts (`halt`, `btest1`, `btest2`, `haha`, `mytest`, `no_hazard`, `omegalul`, `sampler`) show zero regression for all five single-feature disables; the gain from these features is zero when there are no branches and no memory-level parallelism to exploit.
+- Programs with near-zero branch counts (`halt`, `btest1`, `btest2`, `haha`, `no_hazard`, `omegalul`, `sampler`) show zero regression for all five single-feature disables; the gain from these features is zero when there are no branches and no memory-level parallelism to exploit.
 - `evens`, `insertion`, `fib_rec` show small negative Δ% in some single-feature columns (e.g., `no_gshare` on `insertion`: −0.73%). These are artifacts of BHT aliasing in gshare: when gshare is active, two PCs that happen to XOR to the same BHT index interfere with each other; removing gshare eliminates the interference for these specific programs. The aggregate effect is still positive (geomean +0.19%) because gshare helps more programs than it hurts.
 
 ---
 
 ## 4. Failed / non-halting programs
 
-None. All 34 programs halted cleanly under all 7 sweep configurations. Every `.out` file contains `@@@ System halted on WFI instruction`.
+None. All 33 programs halted cleanly under all 7 sweep configurations. Every `.out` file contains `@@@ System halted on WFI instruction`. (The original sweep ran on 34 programs including `mytest`; that program has since been removed and its row dropped from the table — the underlying `.out` files would still show it halted, the count is just now 33.)
 
 ---
 

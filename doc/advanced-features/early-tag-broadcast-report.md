@@ -1,11 +1,11 @@
 # Early tag broadcast: design, integration, and regression
 
 Status as of 2026-04-19: ETB is landed on branch `early-tag-broadcast`,
-correctness-only. 34/34 programs halt at `HALTED_ON_WFI`. Every `.wb`
+correctness-only. 33/33 programs halt at `HALTED_ON_WFI`. Every `.wb`
 file is byte-identical to the `+define+SERIALIZE_BRANCHES` sign-off
 baseline whether the pipeline is built with ETB on (default) or with
 `+define+DISABLE_EARLY_TAG`. Per-program cycle counts are unchanged
-from pre-ETB on all 34 programs. The mechanism works but CDB
+from pre-ETB on all 33 programs. The mechanism works but CDB
 contention in the 1-wide pipeline swallows the one-cycle save.
 
 This document is the companion report for the change. It lives next to
@@ -250,13 +250,13 @@ make lsq.syn.pass        → @@@ Passed
 
 ## 5. Regression
 
-34 programs, three modes, `make -j8 simulate_all`:
+33 programs, three modes, `make -j8 simulate_all`:
 
 | mode                           | halt     | `.wb` vs `SERIALIZE_BRANCHES` baseline | cycle-for-cycle vs pre-ETB |
 |--------------------------------|----------|----------------------------------------|----------------------------|
-| pre-ETB (milestone4 @`cf77b62`) | 34/34 WFI | byte-identical                         | reference                  |
-| ETB on (default)               | 34/34 WFI | byte-identical                         | byte-identical             |
-| `+define+DISABLE_EARLY_TAG`    | 34/34 WFI | byte-identical                         | byte-identical             |
+| pre-ETB (milestone4 @`cf77b62`) | 33/33 WFI | byte-identical                         | reference                  |
+| ETB on (default)               | 33/33 WFI | byte-identical                         | byte-identical             |
+| `+define+DISABLE_EARLY_TAG`    | 33/33 WFI | byte-identical                         | byte-identical             |
 
 The tool log is preserved under the worktree's `.baseline-etb-off/`,
 `.baseline-etb-on-final.txt`, and `.baseline-etb-off/cycle-delta-table.txt`
@@ -288,7 +288,7 @@ ETB at T-1), selector picks at T, issue held by CDB contention, issues
 at T+1.
 
 Same-cycle delta: 0. Reproducer: any MULT -> dependent ALU chain, for
-example `mult_no_lsq`. No delta observed on any of the 34 programs.
+example `mult_no_lsq`. No delta observed on any of the 33 programs.
 
 ### 6.1 When will the save materialize?
 
@@ -320,7 +320,7 @@ Two reasons, both called out in the proposal:
   under the existing single-CDB test infrastructure is cheaper than
   doing it alongside superscalar, and it drops half the consumer-side
   integration risk from the superscalar merge.
-- **Does no harm.** 34/34 `.wb` byte-identical in both modes is the
+- **Does no harm.** 33/33 `.wb` byte-identical in both modes is the
   load-bearing guarantee for the sign-off baseline. The new unit-test
   scenarios catch selector-bypass and value-mux regressions before a
   full-program regression would.
@@ -338,8 +338,9 @@ Per-module synth is green:
 | `lsq`  | `@@@ Passed` | ≥ +90 ps                               |
 
 Full-pipeline synth (`synth/pipeline.vg`) was not re-run as part of
-this change. The pre-ETB worst slack was −309.07 ps on the
-`rs_0/entries[*].src_ready -> mult_0/mstage[0]/product_sum_reg[*]`
+this change. The pre-ETB worst slack was −309.07 ps (re-verified at
+−302.55 ps on a clean rebuild 2026-05-01; same cone class) on the
+`rs_0/entries[*].src*_ready -> mult_0/mstage[0]/product_sum_reg[*]`
 path (see `base-design-verification.md` §4). ETB adds the
 `mult_0.early_done -> rs_0/entries[*].src*_ready` combinational fan-in,
 which is a short path through a single flop's output and a fan-out

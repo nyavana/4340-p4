@@ -150,8 +150,11 @@ LSQ head register
             → MULT-stage-0 multiply tree
 ```
 
-Synth measured this at −504.66 ps slack on the 1000 ps clock — the
-worst path in the integrated netlist (merge report §6).
+This was the worst integrated-netlist path documented in the
+pre-fix snapshot (merge report §6). The originally quoted slack of
+−504.66 ps used stale build artefacts and has been retracted; clean
+re-synth of `dbcd4f6` (with the STLF latch fix in place) gives
+≈ −1600 ps — see merge report §10.3 for the corrected baseline.
 
 ### 3.2 The fix
 
@@ -184,12 +187,13 @@ Forwarded loads now go through the same registered fast path as
 cache-hit loads. They broadcast one cycle after STLF detection
 instead of on the same cycle.
 
-The merge report §10.3 has the full write-up. Net: slack improved
-from −504.66 to −244.54 ps (about 260 ps recovered), the residual
-moved into the MULT-stage-0 multiply tree, and `cmp -s` against the
-pre-fix `.wb` files succeeded on every program. mergesort gained
-exactly one cycle (200 072 → 200 073) because the STLF-fed
-broadcast slipped one slot.
+The merge report §10.3 has the full write-up. The previously quoted
+`−504.66 → −244.54 ps` slack delta used stale build artefacts; both
+endpoints have been retracted. `cmp -s` against the pre-fix `.wb`
+files succeeded on every program. mergesort gained exactly one cycle
+(200 072 → 200 073) because the STLF-fed broadcast slipped one slot.
+The standalone slack contribution of this fix has not been
+re-baselined against a `dbcd4f6`-minus-STLF-pipelining build.
 
 ### 3.3 Why this is one cycle, not zero
 
@@ -266,10 +270,11 @@ worst slack = +0.05 ps  (1000 ps clock)
 ```
 
 LSQ standalone meets at the tightest slack of any tested module
-(merge report §3). The integrated path through MULT stage 0 misses
-by −244.54 ps after the latch fix; the LSQ side of that cone is
-clean now, and the residual lives in the multiplier (merge report
-§6).
+(merge report §3). Post-merge (= `dbcd4f6` + `51b7f1c`) the
+integrated worst slack is −797.58 ps on a different cone:
+`LSQ broadcast → RS operand mux → ALU 32-bit adder → {ROB take_branch,
+LSQ addr}`. The MULT stage-0 cone documented earlier is closed by
+`51b7f1c`'s mult-operand register (merge report §6 / §10.3).
 
 `make lsq.syn.pass` is green after the synth-side wrapper wiring
 fix in the verify-merged-features pass (merge report §10.2). The

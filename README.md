@@ -10,15 +10,18 @@ full advanced-features merge wave). Pull requests target `release`.
 
 ## Status
 
-All 34 programs in `programs/` halt at WFI in simulation and on the
-post-synthesis netlist. Every architectural-writeback file (`.wb`) is
-byte-identical between RTL and synth. Full-pipeline synthesis at
-1000 ps misses timing by −244.54 ps on a path inside the MULT stage-0
-multiply tree (three endpoints violate); the netlist is functionally
-bit-equivalent to the RTL, so the gap is a static-timing concern, not
-a glitch path. All module testbenches (`mult`, `rob`, `rs`, `dcache`,
-`lsq`, `icache`, `branch_predictor`) pass on both simulation and the
-synthesized netlist.
+All 33 programs in `programs/` halt at WFI in simulation. Full-pipeline
+synthesis at 1000 ps misses timing by **−797.58 ps** on a path that
+runs from the LSQ broadcast through the RS operand mux and an ALU
+32-bit adder into the ROB / LSQ entry registers (two endpoints
+violate). RTL ↔ netlist same-commit `.wb` byte-equivalence held on
+the pre-`51b7f1c` baseline; the merge inserts a flop in front of the
+multiplier (no value change), so the property is expected to hold but
+the synth-side regression has not been re-run after the merge. The
+gap is a static-timing concern, not a glitch path. All module
+testbenches (`mult`, `rob`, `rs`, `dcache`, `lsq`, `icache`,
+`branch_predictor`) pass on both simulation and the synthesized
+netlist.
 
 ## Features
 
@@ -113,7 +116,7 @@ make simv                                 # build the RTL simulator
 make no_hazard.out                        # run the smallest program
 make rob.pass                             # run a module testbench
 
-make simulate_all -j                      # all 34 programs on simv
+make simulate_all -j                      # all 33 programs on simv
 make slack                                # check synthesis timing
 ```
 
@@ -183,10 +186,16 @@ the RTL: `verilog/pipeline.sv`, then `rob.sv`, `rs.sv`, `lsq.sv`.
 ## Known limitations
 
 - Full-pipeline synthesis misses timing at 1000 ps. Worst slack is
-  −244.54 ps inside the MULT stage-0 multiply tree (three endpoints
-  violate). Closing the gap would cost an extra cycle on every load
-  (registering `load_complete_value` at the LSQ output) or every
-  multiply (splitting MULT stage 0); both were considered and
-  deferred. The netlist is bit-equivalent to RTL.
+  **−797.58 ps** on `lsq_0/head_reg[2] → rob_0/entries_reg[2][take_branch]`
+  (companion endpoint `lsq_0/head_reg[2] → lsq_0/entries_reg[3][addr][31]`
+  at −797.55 ps; two endpoints violate). The MULT stage-0 cone
+  referenced in older write-ups is closed by `51b7f1c`'s mult-operand
+  register; the residual is the LSQ-broadcast → RS operand mux → ALU
+  32-bit adder cone. Closing the gap would cost an extra cycle on
+  every load (registering `load_complete_value`/`load_complete_tag`
+  between LSQ and CDB) or a rebalance of the adder path; both
+  deferred. The netlist was bit-equivalent to RTL on the
+  pre-`51b7f1c` baseline; re-verification across the merge is
+  expected to hold but was not re-run.
 - No golden-output verification. "Halts at WFI" is the only
   end-to-end correctness check.

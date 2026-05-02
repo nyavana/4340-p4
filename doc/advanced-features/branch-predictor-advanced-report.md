@@ -325,8 +325,12 @@ worst slack = +570.88 ps  (1000 ps clock)
 
 The advanced predictor sits at +570 ps headroom standalone (§3 of the
 merge report). It is not on the integrated critical path — that path
-is `lsq_0/head_reg[1] → mult_0/mstage[0]/product_sum_reg[*]` (merge
-report §6).
+post-`51b7f1c` is `lsq_0/head_reg[2] → rob_0/entries_reg[2][take_branch]`
+(LSQ broadcast → RS operand mux → ALU 32-bit adder → ROB / LSQ entry
+register; merge report §6, current worst slack −797.58 ps). The MULT
+stage-0 cone (`lsq_0/head_reg[1] → mult_0/mstage[0]/product_sum_reg[*]`)
+quoted in older write-ups is closed by `51b7f1c`'s mult-operand
+register.
 
 The XOR fold and the RAS read-mux do not show up as new endpoints. The
 RAS top read (`ras[ras_top_i]`) is a 16-deep mux feeding `pred_target`

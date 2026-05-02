@@ -83,7 +83,7 @@ Verified against the working tree at `verify-merged-features` HEAD.
 - `verilog/lsq.sv:13` — header comment: "Loads can forward from an older in-queue store".
 - `verilog/lsq.sv:179–181` — `stlf_ready [LSQ_SIZE-1:0]`, `stlf_value [XLEN-1:0] [LSQ_SIZE-1:0]`.
 - `verilog/lsq.sv:280–360` — `stlf_compute` always_comb walks each load's older entries, picks the youngest covering store, and refuses partial-byte overlap (sets `can_forward = 1'b0` on conflict).
-- Forwarded loads broadcast one cycle later (after the STLF latch) — this was a deliberate timing-closure deferral noted in CLAUDE.md and is architecturally invisible (`.wb` matches across all 34 programs).
+- Forwarded loads broadcast one cycle later (after the STLF latch) — this was a deliberate timing-closure deferral noted in CLAUDE.md and is architecturally invisible (`.wb` matches across all 33 programs).
 
 ### 3.6 Dcache next-line prefetch (stream buffer)
 

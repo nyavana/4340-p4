@@ -46,7 +46,7 @@ When the report cannot cleanly attribute a number or measure a quantity, say so.
 
 > *"your grade won't suffer from showing us that something is actually a bad idea. What we want to see is that you can measure how good or bad the idea/feature was."* — `doc/project-description.md` §1.5
 
-This applies in §VII (per-feature attribution: superscalar and 2-way set-assoc D-cache are structurally inseparable from the build, and we say so) and in §VIII (the −244 ps full-pipeline slack miss: own it, name the two known fixes, name why we deferred them).
+This applies in §VII (per-feature attribution: superscalar and 2-way set-assoc D-cache are structurally inseparable from the build, and we say so) and in §VIII (the −797.58 ps full-pipeline slack miss: own it, name the residual cone, and name why the next retune was deferred).
 
 ### 2.5 No claims of point values
 
