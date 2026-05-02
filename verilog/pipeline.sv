@@ -170,7 +170,9 @@ module pipeline (
     logic [TAG_W-1:0] mult_dest_tag_reg;
     ALU_FUNC          mult_alu_func_reg;
     logic [63:0]      mult_product;
-    logic [63:0]      mult_mcand, mult_mplier;
+    logic [63:0]      mult_mcand, mult_mplier;         // registered operands fed to mult
+    logic [63:0]      mult_mcand_comb, mult_mplier_comb; // combinational intermediates
+    logic             mult_start_reg;                  // registered start (breaks LSQ→mult path)
     logic             mult_done_valid; // mult_done && !mult_flushed
     logic             mult_early_done;
 
@@ -1017,41 +1019,58 @@ module pipeline (
         if (selected_mult_slot) begin
             case (ALU_FUNC'(rs_issue_op[1][4:0]))
                 ALU_MUL, ALU_MULH: begin
-                    mult_mcand  = {{32{rs_issue_src1_value[1][31]}}, rs_issue_src1_value[1]};
-                    mult_mplier = {{32{rs_issue_src2_value[1][31]}}, rs_issue_src2_value[1]};
+                    mult_mcand_comb  = {{32{rs_issue_src1_value[1][31]}}, rs_issue_src1_value[1]};
+                    mult_mplier_comb = {{32{rs_issue_src2_value[1][31]}}, rs_issue_src2_value[1]};
                 end
                 ALU_MULHU: begin
-                    mult_mcand  = {32'b0, rs_issue_src1_value[1]};
-                    mult_mplier = {32'b0, rs_issue_src2_value[1]};
+                    mult_mcand_comb  = {32'b0, rs_issue_src1_value[1]};
+                    mult_mplier_comb = {32'b0, rs_issue_src2_value[1]};
                 end
                 ALU_MULHSU: begin
-                    mult_mcand  = {{32{rs_issue_src1_value[1][31]}}, rs_issue_src1_value[1]};
-                    mult_mplier = {32'b0, rs_issue_src2_value[1]};
+                    mult_mcand_comb  = {{32{rs_issue_src1_value[1][31]}}, rs_issue_src1_value[1]};
+                    mult_mplier_comb = {32'b0, rs_issue_src2_value[1]};
                 end
                 default: begin
-                    mult_mcand  = {32'b0, rs_issue_src1_value[1]};
-                    mult_mplier = {32'b0, rs_issue_src2_value[1]};
+                    mult_mcand_comb  = {32'b0, rs_issue_src1_value[1]};
+                    mult_mplier_comb = {32'b0, rs_issue_src2_value[1]};
                 end
             endcase
         end else begin
             case (ALU_FUNC'(rs_issue_op[0][4:0]))
                 ALU_MUL, ALU_MULH: begin
-                    mult_mcand  = {{32{rs_issue_src1_value[0][31]}}, rs_issue_src1_value[0]};
-                    mult_mplier = {{32{rs_issue_src2_value[0][31]}}, rs_issue_src2_value[0]};
+                    mult_mcand_comb  = {{32{rs_issue_src1_value[0][31]}}, rs_issue_src1_value[0]};
+                    mult_mplier_comb = {{32{rs_issue_src2_value[0][31]}}, rs_issue_src2_value[0]};
                 end
                 ALU_MULHU: begin
-                    mult_mcand  = {32'b0, rs_issue_src1_value[0]};
-                    mult_mplier = {32'b0, rs_issue_src2_value[0]};
+                    mult_mcand_comb  = {32'b0, rs_issue_src1_value[0]};
+                    mult_mplier_comb = {32'b0, rs_issue_src2_value[0]};
                 end
                 ALU_MULHSU: begin
-                    mult_mcand  = {{32{rs_issue_src1_value[0][31]}}, rs_issue_src1_value[0]};
-                    mult_mplier = {32'b0, rs_issue_src2_value[0]};
+                    mult_mcand_comb  = {{32{rs_issue_src1_value[0][31]}}, rs_issue_src1_value[0]};
+                    mult_mplier_comb = {32'b0, rs_issue_src2_value[0]};
                 end
                 default: begin
-                    mult_mcand  = {32'b0, rs_issue_src1_value[0]};
-                    mult_mplier = {32'b0, rs_issue_src2_value[0]};
+                    mult_mcand_comb  = {32'b0, rs_issue_src1_value[0]};
+                    mult_mplier_comb = {32'b0, rs_issue_src2_value[0]};
                 end
             endcase
+        end
+    end
+
+    // Pipeline register: break the LSQ-head → RS-issue → mult-operand combinational path.
+    // Operands and start are captured into flops on the issue cycle; the multiplier
+    // sees registered values one cycle later, adding one cycle of latency per multiply.
+    always_ff @(posedge clock) begin
+        if (reset) begin
+            mult_start_reg <= 1'b0;
+            mult_mcand     <= '0;
+            mult_mplier    <= '0;
+        end else begin
+            mult_start_reg <= selected_mult_valid;
+            if (selected_mult_valid) begin
+                mult_mcand  <= mult_mcand_comb;
+                mult_mplier <= mult_mplier_comb;
+            end
         end
     end
 
@@ -1060,7 +1079,7 @@ module pipeline (
         .reset      (reset),
         .mcand      (mult_mcand),
         .mplier     (mult_mplier),
-        .start      (selected_mult_valid),
+        .start      (mult_start_reg),
         .product    (mult_product),
         .done       (mult_done),
         .early_done (mult_early_done)
