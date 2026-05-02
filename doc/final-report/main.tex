@@ -1,0 +1,145 @@
+\documentclass[conference]{IEEEtran}
+
+% Required packages
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tikz}
+\usepackage{tikz-timing}
+
+% TikZ libraries
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit}
+
+\begin{document}
+
+\title{Out-of-Order RISC-V Processor: Design, Implementation, and Evaluation}
+
+\author{
+    \IEEEauthorblockN{[Team member names]}
+    \IEEEauthorblockA{EECS 4340, Spring 2026 \\
+    Columbia University}
+}
+
+\maketitle
+
+\begin{abstract}
+% [Paste from draft.md §Abstract]
+\end{abstract}
+
+\section{Introduction}
+% [Paste from draft.md §I]
+
+\section{Background and Constraints}
+% [Paste from draft.md §II]
+
+\section{Pipeline Architecture}
+% [Paste from draft.md §III]
+
+% Figure 1 — Top-level pipeline block diagram (after the dataflow paragraph)
+\begin{figure}[t]
+    \centering
+    \input{figures/fig1_pipeline}
+    \caption{Top-level pipeline. Fetch and commit are in-order; issue and execute are out-of-order. The Reorder Buffer doubles as the physical register file, and a single Common Data Bus is the only result-broadcast network in the base configuration.}
+    \label{fig:pipeline}
+\end{figure}
+
+\section{Base Implementation Details}
+% [Paste from draft.md §IV]
+
+\section{Advanced Features}
+% [Paste from draft.md §V opener]
+
+% Table I — Spec-compliance feature mapping (placeholder; see Task 25)
+% [TABLE I goes here — migrated in Task 25]
+
+\subsection{2-way Superscalar}
+% [Paste from draft.md §V.A]
+
+\subsection{Early Tag Broadcast}
+% [Paste from draft.md §V.B]
+
+% Figure 5 — Early-tag-broadcast timing
+\begin{figure}[t]
+    \centering
+    \input{figures/fig5_timing}
+    \caption{Early Tag Broadcast timing. The MULT producer broadcasts its destination tag in stage 0; a dependent RS entry becomes issue-eligible after the registered ready bit settles, and issues the same cycle the value arrives via CDB bypass --- one cycle earlier than without ETB.}
+    \label{fig:timing}
+\end{figure}
+
+\subsection{Branch-Prediction Enhancements}
+% [Paste from draft.md §V.C]
+
+% Figure 2 — gshare + RAS branch predictor
+\begin{figure}[t]
+    \centering
+    \input{figures/fig2_predictor}
+    \caption{Branch predictor combining gshare with a 16-entry Return Address Stack. The RAS overrides the BTB on returns; gshare's XOR of PC with the global history register de-aliases counters that bimodal would share.}
+    \label{fig:predictor}
+\end{figure}
+
+\subsubsection{gshare}
+% [Paste from draft.md §V.C.1]
+
+\subsubsection{Return Address Stack}
+% [Paste from draft.md §V.C.2]
+
+\subsection{D-cache Enhancements}
+% [Paste from draft.md §V.D]
+
+% Figure 3 — D-cache organization
+\begin{figure}[t]
+    \centering
+    \input{figures/fig3_dcache}
+    \caption{Two-way set-associative D-cache with one-line stream buffer. The stream buffer arms after every demand miss and absorbs sequential line-walks without round-tripping to memory.}
+    \label{fig:dcache}
+\end{figure}
+
+\subsubsection{2-way set-associative D-cache}
+% [Paste from draft.md §V.D.1]
+
+\subsubsection{Next-Line Prefetch / Stream Buffer}
+% [Paste from draft.md §V.D.2]
+
+\subsection{Store-to-Load Forwarding}
+% [Paste from draft.md §V.E]
+
+% Figure 4 — Store-to-load forwarding lanes
+\begin{figure}[t]
+    \centering
+    \input{figures/fig4_stlf}
+    \caption{Store-to-load forwarding. A load at the LSQ head compares against older un-committed stores; a clean byte-cover match forwards the value through a one-cycle latch onto the CDB.}
+    \label{fig:stlf}
+\end{figure}
+
+\section{Verification and Testing Methodology}
+% [Paste from draft.md §VI]
+
+\section{Performance Evaluation and Analysis}
+% [Paste from draft.md §VII]
+
+% Table II — Per-program performance, representative subset (placeholder; see Task 25)
+% [TABLE II goes here — migrated in Task 25]
+
+% Table III — Per-program performance, full 34-row continuation (placeholder; see Task 25)
+% [TABLE III goes here — migrated in Task 25]
+
+% Table IV — Per-feature attribution (placeholder; see Task 25)
+% [TABLE IV goes here — migrated in Task 25]
+
+% Table V — Per-module synthesis slack (placeholder; see Task 25)
+% [TABLE V goes here — migrated in Task 25]
+
+\section{Discussion: Limitations and Future Work}
+% [Paste from draft.md §VIII]
+
+\section{Conclusion}
+% [Paste from draft.md §IX]
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}
