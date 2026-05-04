@@ -68,7 +68,7 @@ export function ETBDiagram() {
   // Bottom panel layout (timing chart)
   // ------------------------------------------------------------
   const gridLeft = 230;
-  const gridTop = 400;
+  const gridTop = 420;
   const cellW = 110;
   const cellH = 28;
   const cycleLabels = ['cycle N-1', 'cycle N', 'cycle N+1', 'cycle N+2'];
@@ -81,7 +81,7 @@ export function ETBDiagram() {
 
   return (
     <svg
-      viewBox="0 0 800 540"
+      viewBox="0 0 800 560"
       className="w-full h-auto"
       xmlns="http://www.w3.org/2000/svg"
       role="img"
