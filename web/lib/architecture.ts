@@ -128,7 +128,7 @@ export const MODULES: PipelineModule[] = [
     name: 'D-Cache',
     category: 'memory',
     description:
-      '256-byte 2-way set-associative, write-back, write-allocate D-cache with byte-granular valid/dirty masks for sub-word stores. One LRU bit per set. Carries its own internal next-line prefetcher (the shared stream_buffer.sv module is wired only to the I-cache front-end).',
+      '256-byte 2-way set-associative, write-back, write-allocate D-cache. One valid + one dirty bit per line; byte granularity for sub-word stores comes from the proc_wr_be byte-enable on the write path, not from per-byte mask state. One LRU bit per set. Carries its own internal next-line prefetcher (the shared stream_buffer.sv module is wired only to the I-cache front-end).',
     parameters: [
       { key: 'capacity', value: '256 B' },
       { key: 'sets', value: '16' },
