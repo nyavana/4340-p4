@@ -50,7 +50,7 @@ export function STLFDiagram() {
 
   return (
     <svg
-      viewBox="0 0 800 460"
+      viewBox="0 0 950 460"
       className="w-full h-auto"
       xmlns="http://www.w3.org/2000/svg"
       role="img"
@@ -83,7 +83,7 @@ export function STLFDiagram() {
 
       {/* Title */}
       <text
-        x={400}
+        x={475}
         y={24}
         textAnchor="middle"
         fontSize={14}
@@ -229,19 +229,19 @@ export function STLFDiagram() {
         </text>
       </g>
 
-      {/* Head load address feed: head entry → comparator (solid iris) */}
+      {/* Head load address feed: head entry → comparator top-left edge (solid iris) */}
       <line
         x1={headCenterX}
         y1={headBottomY}
-        x2={headCenterX}
+        x2={COMPARATOR_X + 24}
         y2={COMPARATOR_Y}
         stroke={IRIS}
         strokeWidth={1.5}
         markerEnd="url(#stlf-arrow-iris)"
       />
       <text
-        x={headCenterX - 6}
-        y={(headBottomY + COMPARATOR_Y) / 2}
+        x={headCenterX - 4}
+        y={(headBottomY + COMPARATOR_Y) / 2 + 6}
         textAnchor="end"
         fontSize={10}
         fill={IRIS}
@@ -270,14 +270,14 @@ export function STLFDiagram() {
         );
       })}
       <text
-        x={COMPARATOR_X + COMPARATOR_W / 2 + 110}
-        y={COMPARATOR_Y - 6}
+        x={COMPARATOR_X + COMPARATOR_W + 50}
+        y={COMPARATOR_Y - 12}
         textAnchor="middle"
         fontSize={9}
         fill={ORCHID}
         opacity={0.85}
       >
-        older store addresses (dotted)
+        older store addrs (dotted)
       </text>
 
       {/* Forwarding mux (orchid pink — STLF-specific) */}
@@ -301,13 +301,13 @@ export function STLFDiagram() {
         >
           mux
         </text>
-        {/* input labels */}
-        <text x={MUX_X - 4} y={MUX_Y + 22} textAnchor="end" fontSize={10} fill={INK}>
+        {/* input labels (offset away from incoming arrows) */}
+        <text x={MUX_X - 4} y={MUX_Y + 13} textAnchor="end" fontSize={10} fill={INK}>
           0
         </text>
         <text
           x={MUX_X - 4}
-          y={MUX_Y + MUX_H - 14}
+          y={MUX_Y + MUX_H - 2}
           textAnchor="end"
           fontSize={10}
           fill={INK}
@@ -362,8 +362,8 @@ export function STLFDiagram() {
           markerEnd="url(#stlf-arrow-orchid)"
         />
         <text
-          x={MUX_X - 8}
-          y={MUX_Y + MUX_H - 30}
+          x={MUX_X - 12}
+          y={MUX_Y + MUX_H - 50}
           textAnchor="end"
           fontSize={10}
           fontWeight={500}
@@ -373,19 +373,18 @@ export function STLFDiagram() {
         </text>
       </g>
 
-      {/* select line into mux (from comparator: "did we forward?") */}
-      <line
-        x1={COMPARATOR_X + COMPARATOR_W / 2}
-        y1={COMPARATOR_Y + COMPARATOR_H}
-        x2={COMPARATOR_X + COMPARATOR_W / 2}
-        y2={COMPARATOR_Y + COMPARATOR_H + 28}
+      {/* select line into mux bottom-center select pin (from comparator: "did we forward?") */}
+      <polyline
+        points={`${COMPARATOR_X + COMPARATOR_W - 30},${COMPARATOR_Y + COMPARATOR_H} ${COMPARATOR_X + COMPARATOR_W - 30},${COMPARATOR_Y + COMPARATOR_H + 40} ${MUX_X + MUX_W / 2},${COMPARATOR_Y + COMPARATOR_H + 40} ${MUX_X + MUX_W / 2},${MUX_Y + MUX_H - 9}`}
+        fill="none"
         stroke={ORCHID}
         strokeWidth={1.2}
         strokeDasharray="4 3"
+        markerEnd="url(#stlf-arrow-orchid)"
       />
       <text
-        x={COMPARATOR_X + COMPARATOR_W / 2}
-        y={COMPARATOR_Y + COMPARATOR_H + 42}
+        x={(COMPARATOR_X + COMPARATOR_W - 30 + MUX_X + MUX_W / 2) / 2}
+        y={COMPARATOR_Y + COMPARATOR_H + 26}
         textAnchor="middle"
         fontSize={10}
         fill={ORCHID}
@@ -437,16 +436,16 @@ export function STLFDiagram() {
         <line
           x1={MUX_X + MUX_W + 66}
           y1={MUX_Y + MUX_H / 2}
-          x2={MUX_X + MUX_W + 96}
+          x2={MUX_X + MUX_W + 130}
           y2={MUX_Y + MUX_H / 2}
           stroke={IRIS}
           strokeWidth={1.5}
           markerEnd="url(#stlf-arrow-iris)"
         />
         <text
-          x={MUX_X + MUX_W + 96}
-          y={MUX_Y + MUX_H / 2 - 8}
-          textAnchor="end"
+          x={MUX_X + MUX_W + 134}
+          y={MUX_Y + MUX_H / 2 - 4}
+          textAnchor="start"
           fontSize={10}
           fontWeight={600}
           fill={INK}
@@ -454,9 +453,9 @@ export function STLFDiagram() {
           → CDB
         </text>
         <text
-          x={MUX_X + MUX_W + 96}
-          y={MUX_Y + MUX_H / 2 + 14}
-          textAnchor="end"
+          x={MUX_X + MUX_W + 134}
+          y={MUX_Y + MUX_H / 2 + 12}
+          textAnchor="start"
           fontSize={9}
           fill={INK}
           opacity={0.7}
