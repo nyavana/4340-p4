@@ -70,13 +70,28 @@
 }
 
 body {
-  background:
-    radial-gradient(circle at 12% 10%, rgba(195, 79, 162, 0.10), transparent 30%),
-    radial-gradient(circle at 90% 4%, rgba(119, 183, 240, 0.18), transparent 30%),
-    var(--background);
+  background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
   min-height: 100vh;
+  position: relative;
+}
+
+/*
+ * Background glow: a single fixed-position layer behind everything. Using
+ * background-attachment: fixed (or position: fixed on a pseudo-element) keeps
+ * the gradient locked to the viewport so long pages don't show seams between
+ * the gradient and the solid background underneath.
+ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 18% 18%, rgba(195, 79, 162, 0.10), transparent 55%),
+    radial-gradient(circle at 82% 12%, rgba(119, 183, 240, 0.16), transparent 60%);
 }
 
 ::selection {

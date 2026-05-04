@@ -131,21 +131,25 @@ export function PipelineLanes({ snapshot }: { snapshot: CycleSnapshot | null }) 
         >
           <p className="text-xs uppercase tracking-widest text-ink-subtle mb-3">{laneLabel}</p>
           <div className="flex-1 overflow-y-auto space-y-2">
-            <AnimatePresence>
-              {grouped[idx].map((p) => (
-                <motion.div
-                  key={p.key}
-                  layout
-                  initial={{ opacity: 0, y: -6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 6 }}
-                  className="rounded-md px-2 py-1 text-xs text-white font-mono"
-                  style={{ background: p.tag >= 0 ? colorForTag(p.tag) : '#5F657A' }}
-                >
-                  {p.label}
-                </motion.div>
-              ))}
-            </AnimatePresence>
+            {grouped[idx].length === 0 ? (
+              <p className="text-[10px] text-ink-subtle italic mt-1">empty</p>
+            ) : (
+              <AnimatePresence>
+                {grouped[idx].map((p) => (
+                  <motion.div
+                    key={p.key}
+                    layout
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 6 }}
+                    className="rounded-md px-2 py-1 text-xs text-white font-mono"
+                    style={{ background: p.tag >= 0 ? colorForTag(p.tag) : '#5F657A' }}
+                  >
+                    {p.label}
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            )}
           </div>
         </div>
       ))}

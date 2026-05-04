@@ -102,6 +102,14 @@ export default function SimulatorPage() {
     .map((c) => c.rob_tag)
     .filter((t): t is number => t !== undefined);
 
+  // Detect commit-stream-only fallback traces: every snapshot has empty
+  // fetch/decode/rob/rs/lsq arrays. The .ppln dump in test/pipeline_test.sv
+  // is currently disabled, so capture_trace.py falls through to .wb parsing
+  // and only the commit lane carries data.
+  const isCommitStreamOnly = trace.snapshots.every(
+    (s) => s.fetch.length === 0 && s.decode.length === 0 && s.rob.length === 0 && s.rs.length === 0 && s.lsq.length === 0,
+  );
+
   return (
     <>
       <MobileFallback />
@@ -120,6 +128,22 @@ export default function SimulatorPage() {
             ))}
           </select>
         </div>
+
+        {isCommitStreamOnly && (
+          <div className="rounded-soft border border-iris-100 bg-sky-50 p-4 text-sm text-iris-800">
+            <p>
+              <span className="font-semibold">Commit-stream trace.</span> The DPI-C
+              pipeline dump in <code className="font-mono">test/pipeline_test.sv</code>{' '}
+              is currently disabled, so this trace was reconstructed from the{' '}
+              <code className="font-mono">.wb</code> writeback file. Only the{' '}
+              <span className="font-semibold">Commit</span> lane and ROB-pop highlights
+              animate — the Fetch / Decode / RS / LSQ / Exec / CDB lanes are empty by
+              design. To get full in-flight state, uncomment the DPI-C pipeline-dump
+              code in <code className="font-mono">pipeline_test.sv</code> and re-run the
+              capture script on the lab PC.
+            </p>
+          </div>
+        )}
 
         <div className="grid grid-cols-[1fr_320px] gap-4">
           <div className="space-y-4">

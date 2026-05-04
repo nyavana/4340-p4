@@ -6,7 +6,7 @@ export function Footer() {
         <p className="mt-2">
           Chenhao Yang · Xuepeng Han · Gavin Zou · Pingchuan Dong · Hins Lyu · Xueer Qian
         </p>
-        <div className="mt-4 flex gap-4">
+        <div className="mt-4 flex flex-wrap gap-4">
           <a
             href="https://github.com/CSEE4340-26/p4.GaPiChiXuXu"
             className="hover:text-plum-500"
@@ -15,6 +15,14 @@ export function Footer() {
           </a>
           <a href="/4340-final-report.pdf" className="hover:text-plum-500">
             Report (PDF)
+          </a>
+          <a
+            href="https://drive.google.com/drive/folders/1Cx6foIeGxm7YQhFhJAD3ntioi5XnTrun"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-plum-500"
+          >
+            More resources (Google Drive)
           </a>
         </div>
       </div>

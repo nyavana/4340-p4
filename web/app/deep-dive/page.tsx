@@ -770,6 +770,15 @@ export default function DeepDivePage() {
             >
               GitHub
             </a>
+            . Presentation slides and other supporting material live in the{' '}
+            <a
+              href="https://drive.google.com/drive/folders/1Cx6foIeGxm7YQhFhJAD3ntioi5XnTrun"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-plum-500 hover:text-plum-600 underline"
+            >
+              project Google Drive folder
+            </a>
             .
           </p>
         </section>
