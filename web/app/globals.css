@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens for the EECS 4340 demo website.
+ * Palette source: doc/web/color/color_palette_guidance.md (§11).
+ * Tailwind v4 exposes any token declared inside `@theme` as a utility class
+ * (e.g. `bg-plum-500`, `text-iris-600`, `shadow-soft`, `rounded-soft`,
+ * `font-sans`).
+ */
+
+:root {
+  --background: #fdfeff;
+  --foreground: #241b2a;
+}
+
+@theme {
+  /* Plum Velvet — primary brand */
+  --color-plum-50: #f1eaef;
+  --color-plum-100: #ddcad6;
+  --color-plum-500: #77295d;
+  --color-plum-600: #591f46;
+  --color-plum-800: #3b142f;
+
+  /* Orchid Pink — accent / highlight */
+  --color-orchid-50: #f9edf6;
+  --color-orchid-100: #f0d3e8;
+  --color-orchid-500: #c34fa2;
+  --color-orchid-600: #923b7a;
+  --color-orchid-800: #612851;
+
+  /* Snow Mist — background */
+  --color-snow-50: #fdfeff;
+  --color-snow-100: #fafcfe;
+  --color-snow-500: #edf1fd;
+  --color-snow-600: #d8ddf2;
+  --color-snow-700: #b2b5be;
+
+  /* Sky Blue — informational */
+  --color-sky-50: #f1f8fe;
+  --color-sky-100: #ddedfb;
+  --color-sky-500: #77b7f0;
+  --color-sky-600: #5989b4;
+  --color-sky-800: #33506a;
+
+  /* Iris Blue — secondary brand */
+  --color-iris-50: #eef0f9;
+  --color-iris-100: #d4d8ef;
+  --color-iris-500: #5364c0;
+  --color-iris-600: #3e4b90;
+  --color-iris-800: #293260;
+
+  /* Ink — text */
+  --color-ink: #241b2a;
+  --color-ink-muted: #5f657a;
+  --color-ink-subtle: #8a8fa3;
+
+  /* Background / foreground convenience tokens */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  /* Shadows */
+  --shadow-soft: 0 18px 48px rgba(83, 100, 192, 0.12);
+  --shadow-strong: 0 24px 64px rgba(83, 100, 192, 0.18);
+
+  /* Border radius */
+  --radius-soft: 1.5rem;
+
+  /* Typography */
+  --font-sans: var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
