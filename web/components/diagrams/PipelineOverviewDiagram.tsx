@@ -29,7 +29,7 @@ const IRIS = '#5364C0';
 const INK = '#241B2A';
 const WHITE = '#FFFFFF';
 
-// Layout constants.  All coordinates are in the 800x480 viewBox.
+// Layout constants.  All coordinates are in the 800x560 viewBox.
 const BOX_W = 150;
 const BOX_W_NARROW = 110;
 const BOX_W_WIDE = 200;
@@ -132,7 +132,7 @@ export function PipelineOverviewDiagram() {
 
   return (
     <svg
-      viewBox="0 0 800 510"
+      viewBox="0 0 800 560"
       className="w-full h-auto"
       xmlns="http://www.w3.org/2000/svg"
       role="img"
