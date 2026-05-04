@@ -105,8 +105,8 @@ export const MODULES: PipelineModule[] = [
     name: 'Multiplier',
     category: 'backend',
     description:
-      'Pipelined multiplier from Project 2, 5 stages. Drives the early-tag-broadcast sideband one cycle before the final result lands on the CDB.',
-    parameters: [{ key: 'MULT_STAGES', value: '5' }],
+      'Pipelined multiplier from Project 2, 8 stages (MULT_STAGES). Drives the early-tag-broadcast sideband one cycle before the final result lands on the CDB.',
+    parameters: [{ key: 'MULT_STAGES', value: '8' }],
     files: [
       { path: 'verilog/mult.sv', githubUrl: blob('verilog/mult.sv') },
       { path: 'verilog/mult_stage.sv', githubUrl: blob('verilog/mult_stage.sv') },
