@@ -1,0 +1,11 @@
+Loading default memory file: program.mem
+Using writeback output file: writeback.out
+@@  0  Asserting System reset......
+@@  Deasserting System reset......
+WB r5 = 0x42
+WB r6 = 0x99
+WB r7 = 0x7
+@@@ branch_accuracy: 8/10 correct (80.00%)
+@@@ System halted on WFI instruction
+@@  120 cycles / 30 instrs = 4.000000 CPI
+@@@ Passed

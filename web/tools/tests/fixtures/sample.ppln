@@ -1,0 +1,28 @@
+Cycle: 1
+  PC=0x00001000
+  ROB: {tag=0,busy=1,pc=0x1000} {tag=1,busy=1,pc=0x1004}
+  RS: {tag=0,op=ADD,src1=R1,src2=R2}
+  LSQ: {tag=1,addr=0xdead,is_store=0}
+  CDB: {tag=0,value=0x42}
+  COMMIT: {tag=0,reg=5,value=0x42}
+Cycle: 2
+  PC=0x00001008
+  ROB: {tag=0,busy=0,pc=0x1000} {tag=1,busy=1,pc=0x1004} {tag=2,busy=1,pc=0x1008}
+  RS: {tag=2,op=SUB,src1=R3,src2=R4}
+  LSQ: {tag=1,addr=0xdead,is_store=0}
+  CDB:
+  COMMIT:
+Cycle: 3
+  PC=0x0000100c
+  ROB: {tag=1,busy=0,pc=0x1004} {tag=2,busy=1,pc=0x1008} {tag=3,busy=1,pc=0x100c}
+  RS: {tag=2,op=SUB,src1=R3,src2=R4} {tag=3,op=AND,src1=R5,src2=R6}
+  LSQ:
+  CDB: {tag=1,value=0x99}
+  COMMIT: {tag=1,reg=6,value=0x99}
+Cycle: 4
+  PC=0x00001010
+  ROB: {tag=2,busy=1,pc=0x1008} {tag=3,busy=0,pc=0x100c}
+  RS: {tag=2,op=SUB,src1=R3,src2=R4}
+  LSQ:
+  CDB: {tag=3,value=0x7}
+  COMMIT:
