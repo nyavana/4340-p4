@@ -242,7 +242,17 @@ def fallback_from_out(path: Path) -> list[CycleSnapshot]:
     wbs = parse_out(path)
     snapshots: list[CycleSnapshot] = []
     for i, w in enumerate(wbs):
-        commit_entry: dict[str, Any] = {'reg': w['reg'], 'value': w['value']}
+        commit_entry: dict[str, Any] = {
+            'reg': w['reg'],
+            'value': w['value'],
+            # Surface the writeback as something the React visualizer can render:
+            # use the architectural register index as the visual "tag" (drives
+            # color in PipelineLanes) and synthesize a label.
+            'rob_tag': w['reg'],
+            'instr_text': f'x{w["reg"]}=0x{w["value"]:x}'
+                if 0 <= w['value'] < (1 << 32)
+                else f'x{w["reg"]}={w["value"]}',
+        }
         if 'pc' in w:
             commit_entry['pc'] = w['pc']
         snapshots.append(
