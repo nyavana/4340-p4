@@ -230,25 +230,19 @@ export function DCacheDiagram() {
               3 bits
             </text>
 
-            {/* Arrow from index segment down into the cache grid */}
-            <line
-              x1={decX + tagW + idxW / 2}
-              y1={decY + decH + 18}
-              x2={gridX - 12}
-              y2={gridY + cellH * selectedRowIdx + cellH / 2}
+            {/* Arrow from index segment routed around the grid frame into
+                the set-1 row from the left. We exit the bottom of the
+                index decode box, route LEFT in the gap above the bit-width
+                annotations, then DIAGONALLY into the left edge of the
+                set-1 cells. The diagonal stays clear of the "set 1" label
+                (which sits at row centre on the left of the grid). */}
+            <polyline
+              points={`${decX + tagW + idxW / 2},${decY + decH + 2} ${gridX - 22},${decY + decH + 2} ${gridX},${gridY + cellH * selectedRowIdx + cellH / 2}`}
+              fill="none"
               stroke={IRIS}
               strokeWidth="1.5"
               markerEnd="url(#dc-arrow-iris)"
             />
-            <text
-              x={decX + tagW + idxW / 2 + 50}
-              y={gridY + cellH * selectedRowIdx + cellH / 2 - 4}
-              fontSize="10"
-              fill={INK}
-              fontStyle="italic"
-            >
-              selects set
-            </text>
           </g>
         );
       })()}
@@ -577,11 +571,14 @@ export function DCacheDiagram() {
         // Connector from selected cell to the strip
         return (
           <g>
-            <line
-              x1={selectedCellX + cellW + 80}
-              y1={selectedCellY + cellH / 2}
-              x2={maskPanelX - 6}
-              y2={maskPanelY + 14}
+            {/* Connector from the right edge of the selected (set 1, way 1)
+                cell to the per-byte mask panel. Anchor x1 to the actual
+                cell edge and route up-and-over the LRU column so the line
+                does not cross any other box. The final segment is
+                horizontal so the arrowhead lands ON the mask panel. */}
+            <polyline
+              points={`${selectedCellX + cellW},${selectedCellY + cellH / 2} ${gridX + cellW * 2 + 6},${selectedCellY + cellH / 2} ${gridX + cellW * 2 + 6},${gridY - 32} ${maskPanelX - 16},${gridY - 32} ${maskPanelX - 16},${maskPanelY + 14 + 9} ${maskPanelX - 4},${maskPanelY + 14 + 9}`}
+              fill="none"
               stroke={IRIS}
               strokeWidth="1.5"
               markerEnd="url(#dc-arrow-iris)"
@@ -619,14 +616,6 @@ export function DCacheDiagram() {
             >
               proc_wr_be[7:0]
             </text>
-            <text
-              x={maskPanelX + stripW + 6}
-              y={maskPanelY + 4}
-              textAnchor="end"
-              fontSize="9"
-              fill={INK}
-              fontStyle="italic"
-            />
             {Array.from({ length: 8 }).map((_, i) => {
               // Example pattern: store the low half-word (bytes 0,1).
               const set = i < 2;
@@ -769,12 +758,15 @@ export function DCacheDiagram() {
           masks mem2proc_response per cache (pipeline.sv)
         </text>
 
-        {/* arrow: cache -> bus mask */}
+        {/* arrow: cache -> bus mask. Start anchored to the bottom edge of
+            the cache outer frame (gridY + gridH + 6 is the actual frame
+            bottom at this x), end anchored to the top edge of the bus
+            mask box. */}
         <line
           x1={gridX + cellW}
-          y1={gridY + gridH + 8}
+          y1={gridY + gridH + 6}
           x2={gridX + cellW}
-          y2={busBoxY - 6}
+          y2={busBoxY}
           stroke={IRIS}
           strokeWidth="1.5"
           markerEnd="url(#dc-arrow-iris)"
@@ -789,9 +781,11 @@ export function DCacheDiagram() {
           fill / evict
         </text>
 
-        {/* arrow: bus mask -> main memory (right) */}
+        {/* arrow: bus mask -> main memory (right). Start anchored to the
+            right edge of the bus mask box, end anchored to the left edge
+            of the main memory box. */}
         <line
-          x1={busBoxX + busBoxW + 6}
+          x1={busBoxX + busBoxW}
           y1={busBoxY + busBoxH / 2}
           x2={780}
           y2={busBoxY + busBoxH / 2}
@@ -830,9 +824,10 @@ export function DCacheDiagram() {
           100 ns latency
         </text>
 
-        {/* arrow: I-cache stream buffer (left) shares the bus mask */}
+        {/* arrow: I-cache stream buffer (left) shares the bus mask. Both
+            endpoints anchored to actual box edges. */}
         <line
-          x1={busBoxX - 6}
+          x1={busBoxX}
           y1={busBoxY + busBoxH / 2}
           x2={140}
           y2={busBoxY + busBoxH / 2}
