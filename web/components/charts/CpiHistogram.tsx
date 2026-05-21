@@ -23,7 +23,7 @@ export function CpiHistogram() {
   return (
     <div className="h-[360px] w-full">
       <ResponsiveContainer>
-        <BarChart data={bin()} margin={{ left: 20, right: 20, top: 8, bottom: 8 }}>
+        <BarChart data={bin()} margin={{ left: 20, right: 20, top: 32, bottom: 8 }}>
           <XAxis
             dataKey="range"
             stroke="#5F657A"
